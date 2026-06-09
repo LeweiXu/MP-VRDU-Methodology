@@ -133,23 +133,46 @@ class Retriever(ABC):
 
 
 class RetrieverSelector(EvidenceSelector):
-    """Adapt a Retriever into an EvidenceSelector with per-document indexing."""
+    """Adapt a Retriever into an EvidenceSelector with per-document indexing.
+
+    Beyond the fixed top_k cut, this is the seam for the Tier-1 post-processing
+    that wraps any retriever (docs/corpus_techniques.md): an optional LLM
+    ``reranker`` (#3) re-orders the candidate pages, ``k_strategy`` (#1) chooses
+    the cut adaptively from the score distribution, and ``expand`` (#4/#5) brings
+    parent/neighbour pages along. With the defaults (no reranker, fixed,
+    none) the behaviour is identical to the original page-collapse.
+    """
 
     def __init__(self, retriever: Retriever, top_k: int, parser_name: str,
-                 dpi: int, chunking: str = "page"):
+                 dpi: int, chunking: str = "page", *,
+                 k_strategy: str = "fixed", candidate_k: int = 0,
+                 reranker: Optional["object"] = None, rerank_candidates: int = 0,
+                 expand: str = "none", expand_window: int = 1):
         self.retriever = retriever
         self.top_k = top_k
         self.parser_name = parser_name
         self.dpi = dpi
         self.chunking = chunking
+        self.k_strategy = k_strategy
+        self.candidate_k = candidate_k
+        self.reranker = reranker
+        self.rerank_candidates = rerank_candidates
+        self.expand = expand
+        self.expand_window = expand_window
         self.name = retriever.name
         self._indexed_doc: Optional[str] = None
         self._units: list[Unit] = []
+        self._page_text: dict[int, str] = {}      # cached per indexed doc
+        self._page_sections: dict[int, object] = {}
 
     def unload(self) -> None:
         self.retriever.unload()
+        if self.reranker is not None:
+            self.reranker.unload()
         self._indexed_doc = None
         self._units = []
+        self._page_text = {}
+        self._page_sections = {}
 
     def _ensure_indexed(self, document: Document) -> None:
         if self._indexed_doc == document.doc_id:
@@ -158,12 +181,40 @@ class RetrieverSelector(EvidenceSelector):
                                   self.parser_name, self.dpi, self.chunking)
         self.retriever.index(self._units, doc_id=document.doc_id)
         self._indexed_doc = document.doc_id
+        self._page_text = {}
+        self._page_sections = {}
+
+    def _candidate_depth(self) -> int:
+        """How many distinct pages to surface before rerank/cut/expand."""
+        depth = self.top_k
+        auto = max(self.top_k * 4, 8)
+        if self.k_strategy != "fixed":
+            depth = max(depth, self.candidate_k or auto)
+        if self.reranker is not None:
+            depth = max(depth, self.rerank_candidates or auto)
+        return depth
+
+    def _parsed_pages(self, document: Document):
+        # Rerank and parent_section need page TEXT/structure even for visual
+        # retrievers (which index images) — re-invoke the parser once per doc.
+        from ..represent.base import get_parser
+
+        if not self._page_text and not self._page_sections:
+            parser = get_parser(self.parser_name)
+            parsed = parser.parse_document(document.pdf_path)
+            self._page_text = {p.page_index: (p.text or "") for p in parsed}
+            from .postprocess import build_page_sections
+            self._page_sections = build_page_sections(parsed)
+        return self._page_text, self._page_sections
 
     def select(self, question: Question, document: Document) -> Selection:
+        from .postprocess import apply_k_strategy, expand_pages
+
         self._ensure_indexed(document)
+        cand_pages = self._candidate_depth()
         # retrieve extra units so that, after collapsing chunks to pages, we can
-        # still surface top_k distinct pages.
-        unit_k = min(len(self._units), max(self.top_k * 4, self.top_k))
+        # still surface `cand_pages` distinct pages.
+        unit_k = min(len(self._units), max(cand_pages * 4, cand_pages))
         ranked = self.retriever.retrieve(question.question, k=unit_k)
         id_to_page = {u.unit_id: u.page_index for u in self._units}
 
@@ -175,7 +226,35 @@ class RetrieverSelector(EvidenceSelector):
                 continue
             pages.append(page)
             scores.append(float(score))
-            if len(pages) >= self.top_k:
+            if len(pages) >= cand_pages:
                 break
-        return Selection(page_indices=pages, scores=scores,
-                         meta={"selector": self.name, "unit_k": unit_k})
+
+        meta: dict[str, Any] = {"selector": self.name, "unit_k": unit_k,
+                                # full candidate ranking (for recall sweeps)
+                                "ranked_pages": list(pages)}
+
+        # #3 rerank the candidate pages over their text, then cut keeps top_k.
+        if self.reranker is not None and pages:
+            page_text, _ = self._parsed_pages(document)
+            reranked = self.reranker.rerank(
+                question.question, [(p, page_text.get(p, "")) for p in pages])
+            pages = [p for p, _ in reranked]
+            scores = [float(s) for _, s in reranked]
+            meta["reranked"] = True
+
+        # #1 adaptive vs fixed cut.
+        keep = apply_k_strategy(scores, self.k_strategy, self.top_k)
+        pages, scores = pages[:keep], scores[:keep]
+        meta["n_kept"] = keep
+
+        # #4/#5 expansion (only ever adds pages).
+        if self.expand != "none" and pages:
+            psec = None
+            if self.expand == "parent_section":
+                _, psec = self._parsed_pages(document)
+            pages, scores = expand_pages(
+                pages, scores, mode=self.expand, window=self.expand_window,
+                n_pages=document.ensure_pages(), page_sections=psec)
+            meta["expand"] = self.expand
+
+        return Selection(page_indices=pages, scores=scores, meta=meta)

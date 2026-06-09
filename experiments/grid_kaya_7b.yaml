@@ -1,0 +1,72 @@
+# Full experiment grid for KAYA with the real Qwen2.5-VL-7B (Apache-2.0).
+#
+#   sbatch scripts/kaya/run_grid.sbatch                # uses this suite's generator
+#   # or override the model for the 32B scaling point:
+#   python scripts/run_grid.py --suite experiments/grid_kaya_7b.yaml \
+#       --generator kaya_vlm --model-id Qwen/Qwen2.5-VL-32B-Instruct
+#
+# This is the dissertation grid (context.md §4 sub-studies). It is RESUMABLE, so
+# split it across SLURM array jobs / sessions freely. ~64 conditions × 1091 q.
+#
+# ┌────────────────────────────────────────────────────────────────────────────┐
+# │ JUDGE: this runs the deterministic rule judge. For the HEADLINE numbers,     │
+# │ rerun the key conditions with a FIXED LLM judge and declare it (context.md   │
+# │ §6,§8). The rule judge is a reproducible stand-in, not the official scorer.  │
+# └────────────────────────────────────────────────────────────────────────────┘
+
+defaults:
+  seed: 0
+  data: {name: mmlongbench-doc, slice: full}
+  representation: {parser: pymupdf4llm, chunking: page, dpi: 150}
+  generation:
+    generator: kaya_vlm
+    model_id: Qwen/Qwen2.5-VL-7B-Instruct
+    max_new_tokens: 256
+    temperature: 0.0
+    max_pixels: 1003520        # ~1280*28*28; A100 has headroom (raise/remove if OK)
+  judge: {type: rule}
+
+substudies:
+  # ── Baselines: floor (no-retrieval, first-N pages) + ceiling (oracle pages) ──
+  # The whole analysis lives between these two numbers (context.md §7).
+  baselines:
+    axes:
+      retrieval.method:    [none, oracle]
+      generation.modality: [image, text]
+
+  # ── Sub-study A — RETRIEVAL METHOD ──────────────────────────────────────────
+  # Fix representation (PyMuPDF4LLM, page). Two generation blocks (image, text)
+  # so the retrieval comparison is clean within each. Full top-k sweep gives the
+  # accuracy-vs-recall-vs-cost curves (top-k is NON-monotonic — context.md §5).
+  A_retrieval:
+    axes:
+      retrieval.method:    [bm25, tfidf, dense, colpali, colqwen, hybrid]
+      generation.modality: [image, text]
+      retrieval.top_k:     [1, 2, 4, 8]
+
+  # ── Sub-study B — DOCUMENT REPRESENTATION (text retrievers only) ────────────
+  # Fix the retriever (dense) + modality (text) so extraction quality flows to
+  # the generator. Part 1: vary the parser. Part 2: vary chunk granularity.
+  B_parser:
+    axes:
+      retrieval.method:      [dense]
+      representation.parser: [pymupdf4llm, mineru, tesseract]
+      generation.modality:   [text]
+      retrieval.top_k:       [4]
+  B_chunking:
+    axes:
+      retrieval.method:        [dense]
+      representation.chunking: [page, chunk, section]
+      generation.modality:     [text]
+      retrieval.top_k:         [4]
+
+  # ── Sub-study C — GENERATION MODALITY ───────────────────────────────────────
+  # Fix retrieval + representation; flip image / text / both. Done for a visual
+  # retriever (ColQwen) AND a text retriever (BM25) so the "both" effect is seen
+  # under each retrieval modality. For text/both over a visual retriever, the
+  # retrieved pages are parsed by the fixed default parser (pymupdf4llm).
+  C_modality:
+    axes:
+      retrieval.method:    [colqwen, bm25]
+      generation.modality: [image, text, both]
+      retrieval.top_k:     [4]

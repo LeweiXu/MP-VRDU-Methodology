@@ -1,0 +1,25 @@
+# Tiny demo suite: cheap retrievers only (no visual model downloads), 3B, meant
+# to be run on the small subset to exercise the full analysis/report quickly.
+#   python scripts/run_grid.py --suite experiments/demo_subset.yaml \
+#       --slice data/mmlongbench_subset --max-questions 8 --results-root results/demo
+#   python scripts/report.py --results results/demo
+defaults:
+  seed: 0
+  data: {name: mmlongbench-doc, slice: data/mmlongbench_subset}
+  representation: {parser: pymupdf4llm, chunking: page, dpi: 110}
+  generation:
+    generator: local_small_vlm
+    model_id: Qwen/Qwen2.5-VL-3B-Instruct
+    max_new_tokens: 96
+    max_pixels: 602112
+  judge: {type: rule}
+substudies:
+  baselines:
+    axes:
+      retrieval.method:    [none, oracle]
+      generation.modality: [image]
+  A_retrieval:
+    axes:
+      retrieval.method:    [grep, bm25, dense]
+      generation.modality: [image]
+      retrieval.top_k:     [4]

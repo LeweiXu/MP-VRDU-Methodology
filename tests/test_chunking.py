@@ -40,3 +40,21 @@ def test_section_chunking_degrades_without_structure():
     chunks = chunk_pages(_pages_plain(), "section")
     assert len(chunks) == 2
     assert all(c.section is None for c in chunks)
+
+
+def test_section_chunking_splits_long_section_keeping_heading():
+    # a long-bodied section is split, but the heading rides on every sub-chunk
+    long_body = "word " * 200
+    pages = [ParsedPage(0, "x", sections=[("Methods", long_body)])]
+    chunks = chunk_pages(pages, "section", chunk_words=50, overlap=10)
+    assert len(chunks) > 1                              # the section was split
+    assert all(c.section == "Methods" for c in chunks)
+    assert all(c.text.startswith("Methods") for c in chunks)   # never split off
+    assert all(c.page_index == 0 for c in chunks)
+
+
+def test_section_chunking_short_section_stays_whole():
+    pages = [ParsedPage(0, "x", sections=[("H", "short body")])]
+    chunks = chunk_pages(pages, "section", chunk_words=50)
+    assert len(chunks) == 1
+    assert chunks[0].text == "H\nshort body"

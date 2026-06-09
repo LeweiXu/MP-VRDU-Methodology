@@ -42,7 +42,11 @@ def evaluate_retrieval(selector: EvidenceSelector, dataset: Dataset,
     try:
         for q in dataset.questions:
             doc = dataset.get_document(q.doc_id)
-            pages = selector.select(q, doc).page_indices
+            sel_out = selector.select(q, doc)
+            # use the full candidate ranking when present so a recall@k sweep is
+            # meaningful even under an adaptive cut / expansion (which reshape the
+            # final page_indices). Falls back to the selection for plain selectors.
+            pages = sel_out.meta.get("ranked_pages") or sel_out.page_indices
             per_q = {}
             for k in ks:
                 r = recall_at_k(pages, q.evidence_pages_zero_based, k=k)

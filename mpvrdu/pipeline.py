@@ -78,6 +78,7 @@ def run(cfg: RunConfig, dataset: Optional[Dataset] = None,
 
             gi = builder.build(q, doc, selection)
             pred = generator.answer_input(gi)
+            usage = getattr(generator, "last_usage", None)
 
             ascore = judge.score(q.question, pred, q.answer, q.answer_format,
                                  gold_is_unanswerable=q.is_unanswerable)
@@ -86,7 +87,7 @@ def run(cfg: RunConfig, dataset: Optional[Dataset] = None,
             scores.append(ascore)
             recalls.append(recall)
 
-            writer.write({
+            row = {
                 "qid": q.qid,
                 "doc_id": q.doc_id,
                 "question": q.question,
@@ -102,7 +103,16 @@ def run(cfg: RunConfig, dataset: Optional[Dataset] = None,
                 "n_selected": gi.n_pages,
                 "recall_at_k": recall,
                 "evidence_sources": q.evidence_sources,
-            })
+            }
+            if usage is not None:
+                row.update({
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "n_images": usage.n_images,
+                    "gen_seconds": round(usage.seconds, 4),
+                    "n_llm_calls": usage.n_calls,
+                })
+            writer.write(row)
 
     metrics = aggregate(scores)
     metrics["mean_recall_at_k"] = sum(recalls) / max(len(recalls), 1)

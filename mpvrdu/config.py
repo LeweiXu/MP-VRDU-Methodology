@@ -26,6 +26,7 @@ TEXT_FORMATS = {"markdown", "text", "html"}
 RETRIEVAL_METHODS = {
     "none",      # no-retrieval baseline (first-N pages)
     "oracle",    # gold evidence_pages upper bound
+    "grep",      # exact-substring dumb floor (context.md §5)
     "bm25",
     "tfidf",
     "dense",
@@ -36,6 +37,10 @@ RETRIEVAL_METHODS = {
 MODALITIES = {"image", "text", "both"}
 GENERATORS = {"mock", "local_small_vlm", "kaya_vlm"}
 JUDGES = {"rule", "llm"}
+# --- Tier-1 retrieval post-processing toggles (docs/corpus_techniques.md) ---
+K_STRATEGIES = {"fixed", "gmm", "kmeans"}   # adaptive top-k (#1)
+RERANKS = {"none", "llm"}                    # retrieve -> rerank -> read (#3)
+EXPANSIONS = {"none", "parent_page", "parent_section", "adjacent"}  # (#4, #5)
 
 
 class ConfigError(ValueError):
@@ -67,6 +72,19 @@ class RetrievalConfig:
     no_retrieval_pages: int = 10     # N for the first-N no-retrieval baseline
     hybrid_methods: list[str] = field(default_factory=lambda: ["bm25", "dense"])
     rrf_k: int = 60                  # Reciprocal Rank Fusion constant
+    # --- Tier-1 post-processing (wraps ANY retriever; docs/corpus_techniques.md) ---
+    # #1 adaptive top-k: derive the cut from the score distribution instead of a
+    # constant k (ViDoRAG GMM / AVIR k-means). "fixed" keeps the legacy top_k cut.
+    k_strategy: str = "fixed"        # fixed | gmm | kmeans
+    candidate_k: int = 0             # candidate-pool depth for adaptive (0 -> auto)
+    # #3 retrieve -> rerank -> read: a second pass re-scores the candidate pages
+    # with an LLM over page text, then the cut keeps top_k of the reranked list.
+    rerank: str = "none"             # none | llm
+    rerank_candidates: int = 0       # how many pages to rerank (0 -> auto)
+    rerank_model: Optional[str] = None   # LLM checkpoint for the reranker
+    # #4/#5 selection expansion: bring co-located / neighbouring pages along.
+    expand: str = "none"             # none | parent_page | parent_section | adjacent
+    expand_window: int = 1           # adjacent: pages on each side
 
 
 @dataclass
@@ -118,6 +136,9 @@ class RunConfig:
         _check("representation.chunking", self.representation.chunking, CHUNKINGS)
         _check("representation.text_format", self.representation.text_format, TEXT_FORMATS)
         _check("retrieval.method", self.retrieval.method, RETRIEVAL_METHODS)
+        _check("retrieval.k_strategy", self.retrieval.k_strategy, K_STRATEGIES)
+        _check("retrieval.rerank", self.retrieval.rerank, RERANKS)
+        _check("retrieval.expand", self.retrieval.expand, EXPANSIONS)
         _check("generation.modality", self.generation.modality, MODALITIES)
         _check("generation.generator", self.generation.generator, GENERATORS)
         _check("judge.type", self.judge.type, JUDGES)
@@ -126,6 +147,14 @@ class RunConfig:
                    {"gold", "wrong", "echo"})
         if self.retrieval.top_k < 1:
             raise ConfigError("retrieval.top_k must be >= 1")
+        if self.retrieval.candidate_k < 0:
+            raise ConfigError("retrieval.candidate_k must be >= 0")
+        if self.retrieval.rerank_candidates < 0:
+            raise ConfigError("retrieval.rerank_candidates must be >= 0")
+        if self.retrieval.expand == "adjacent" and self.retrieval.expand_window < 1:
+            raise ConfigError("retrieval.expand_window must be >= 1 for adjacent expansion")
+        if self.retrieval.rerank == "llm" and self.retrieval.method in {"none", "oracle"}:
+            raise ConfigError("retrieval.rerank=llm is meaningless for method none/oracle")
         if self.retrieval.method == "hybrid":
             fusable = RETRIEVAL_METHODS - {"none", "oracle", "hybrid"}
             if len(self.retrieval.hybrid_methods) < 2:

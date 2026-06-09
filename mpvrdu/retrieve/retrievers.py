@@ -67,6 +67,25 @@ class BM25Retriever(Retriever):
         return _topk(scores, self.ids, k)
 
 
+class GrepRetriever(Retriever):
+    """Exact keyword-overlap 'dumb floor' (context.md §5). Ranks pages by how
+    many distinct query tokens appear in the page text — no IDF, no embeddings."""
+
+    name = "grep"
+    modality = "text"
+
+    def index(self, units: list[Unit], doc_id: Optional[str] = None) -> None:
+        self.ids = [u.unit_id for u in units]
+        self._sets = [set(tokenize(u.text or "")) for u in units]
+
+    def retrieve(self, query: str, k: int):
+        if not self.ids:
+            return []
+        q = set(tokenize(query))
+        scores = [len(q & s) for s in self._sets]
+        return _topk(scores, self.ids, k)
+
+
 class TFIDFRetriever(Retriever):
     name = "tfidf"
     modality = "text"
@@ -173,8 +192,17 @@ class _VisualLateInteraction(Retriever):
         proc_cls = getattr(cem, self._processor_cls_name)
         log.info("loading visual retriever %s (%s) on %s",
                  self.model_id, self._model_cls_name, device)
-        self._model = model_cls.from_pretrained(
-            self.model_id, torch_dtype=torch.bfloat16, device_map=device).eval()
+        # Stream weights straight to the GPU in bf16 (device_map + low_cpu_mem_usage)
+        # so peak memory is ~one 6GB copy, not the parallel-materialisation spike
+        # that OOMs a 12GB card. `dtype` is the transformers-5.x name for the old
+        # `torch_dtype`; fall back for older transformers.
+        load_kwargs = dict(device_map=device, low_cpu_mem_usage=True)
+        try:
+            self._model = model_cls.from_pretrained(
+                self.model_id, dtype=torch.bfloat16, **load_kwargs).eval()
+        except TypeError:
+            self._model = model_cls.from_pretrained(
+                self.model_id, torch_dtype=torch.bfloat16, **load_kwargs).eval()
         self._processor = proc_cls.from_pretrained(self.model_id)
 
     def index(self, units: list[Unit], doc_id: Optional[str] = None) -> None:
@@ -237,6 +265,8 @@ class ColQwenRetriever(_VisualLateInteraction):
 
 def build_retriever(method: str, cfg) -> Retriever:
     """cfg is a RetrievalConfig. Construct a single (non-hybrid) retriever."""
+    if method == "grep":
+        return GrepRetriever()
     if method == "bm25":
         return BM25Retriever()
     if method == "tfidf":

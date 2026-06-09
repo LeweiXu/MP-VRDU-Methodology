@@ -12,9 +12,10 @@ NEVER report numbers from the mock — it exists only to test the harness.
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
-from .base import Generator
+from .base import Generator, Usage
 
 WRONG_ANSWER = "completely-incorrect-sentinel-zzzz"
 
@@ -24,6 +25,7 @@ class MockGenerator(Generator):
 
     def __init__(self, mode: str = "gold", gold_lookup: Optional[dict] = None,
                  current_qid: Optional[str] = None):
+        super().__init__()
         self.mode = mode
         self.gold_lookup = gold_lookup or {}
         # the pipeline sets current_qid before each call so "gold" knows which Q
@@ -34,6 +36,20 @@ class MockGenerator(Generator):
 
     def answer(self, question: str, images: Optional[list[str]] = None,
                text: Optional[str] = None) -> str:
+        t0 = time.time()
+        pred = self._answer(question, images, text)
+        # word-count stand-ins for tokens (real counts come from real generators)
+        self.last_usage = Usage(
+            input_tokens=len((question + " " + (text or "")).split()),
+            output_tokens=len(pred.split()),
+            n_images=len(images or []),
+            n_calls=1,
+            seconds=time.time() - t0,
+        )
+        return pred
+
+    def _answer(self, question: str, images: Optional[list[str]] = None,
+                text: Optional[str] = None) -> str:
         if self.mode == "gold":
             if self.current_qid is None or self.current_qid not in self.gold_lookup:
                 raise RuntimeError(

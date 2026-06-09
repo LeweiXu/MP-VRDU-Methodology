@@ -48,6 +48,16 @@ def test_bm25_finds_evidence_page(synthetic_ds):
     assert top[0][0] == 2
 
 
+def test_grep_floor_finds_evidence_page(synthetic_ds):
+    from mpvrdu.retrieve.retrievers import GrepRetriever
+    doc = synthetic_ds.get_document("beta.pdf")
+    units = build_units(doc, "text", "pymupdf", dpi=72)
+    r = GrepRetriever()
+    r.index(units, doc_id="beta.pdf")
+    top = r.retrieve("accuracy reached", k=1)
+    assert top[0][0] == 2                          # Results page has "accuracy"
+
+
 def test_tfidf_finds_evidence_page(synthetic_ds):
     doc = synthetic_ds.get_document("beta.pdf")
     units = build_units(doc, "text", "pymupdf", dpi=72)
@@ -85,6 +95,38 @@ def test_hybrid_runs(synthetic_ds):
     selection = sel.select(q, doc)
     assert selection.meta["components"] == ["bm25", "tfidf"]
     assert 2 in selection.page_indices
+
+
+def test_adjacent_expansion_adds_neighbours(synthetic_ds):
+    # top_k=1 isolates the evidence page (0-based 2), then ±1 expansion adds 1,3
+    sel = build_selector(_cfg("bm25", top_k=1, expand="adjacent", expand_window=1))
+    q = next(q for q in synthetic_ds.questions if q.qid == "s2")
+    doc = synthetic_ds.get_document(q.doc_id)
+    selection = sel.select(q, doc)
+    assert selection.page_indices[0] == 2              # the hit stays ranked first
+    assert {1, 3} <= set(selection.page_indices)       # neighbours brought along
+    assert selection.meta["expand"] == "adjacent"
+    # full candidate ranking is preserved for recall sweeps
+    assert selection.meta["ranked_pages"] == [2]
+
+
+def test_adaptive_k_runs_and_records_cut(synthetic_ds):
+    pytest.importorskip("sklearn")
+    sel = build_selector(_cfg("bm25", top_k=4, k_strategy="kmeans"))
+    q = next(q for q in synthetic_ds.questions if q.qid == "s2")
+    doc = synthetic_ds.get_document(q.doc_id)
+    selection = sel.select(q, doc)
+    assert 1 <= selection.meta["n_kept"] <= len(selection.meta["ranked_pages"])
+    assert len(selection.page_indices) == selection.meta["n_kept"]
+
+
+def test_recall_eval_uses_candidate_ranking_under_expansion(synthetic_ds):
+    # expansion reshapes the final pages, but the recall sweep must still see the
+    # raw ranking (via meta ranked_pages) so recall@k stays monotone.
+    sel = build_selector(_cfg("bm25", top_k=1, expand="adjacent"))
+    res = evaluate_retrieval(sel, synthetic_ds, ks=[1, 2, 4, 8])
+    vals = [res["recall_at_k"][k] for k in (1, 2, 4, 8)]
+    assert vals == sorted(vals)
 
 
 def test_dense_retriever_optional(synthetic_ds):

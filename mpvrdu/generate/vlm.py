@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Optional
 
 from ..logging_utils import get_logger
-from .base import Generator
+from .base import Generator, Usage
 
 log = get_logger("generate")
 
@@ -31,6 +31,7 @@ class _QwenVLBase(Generator):
                  temperature: float = 0.0, device_map: str = "auto",
                  load_in_4bit: bool = False, max_pixels: Optional[int] = None,
                  min_pixels: Optional[int] = None):
+        super().__init__()
         self.model_id = model_id
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
@@ -77,6 +78,8 @@ class _QwenVLBase(Generator):
 
     def answer(self, question: str, images: Optional[list[str]] = None,
                text: Optional[str] = None) -> str:
+        import time
+
         self._ensure_loaded()
         from qwen_vl_utils import process_vision_info
 
@@ -87,13 +90,19 @@ class _QwenVLBase(Generator):
         inputs = self._processor(text=[chat], images=image_inputs,
                                  videos=video_inputs, padding=True,
                                  return_tensors="pt").to(self._model.device)
+        n_in = int(inputs.input_ids.shape[1])
+        t0 = time.time()
         gen = self._model.generate(
             **inputs, max_new_tokens=self.max_new_tokens,
             do_sample=self.temperature > 0, temperature=max(self.temperature, 1e-6))
+        seconds = time.time() - t0
         trimmed = gen[:, inputs.input_ids.shape[1]:]
         out = self._processor.batch_decode(
             trimmed, skip_special_tokens=True,
             clean_up_tokenization_spaces=False)[0]
+        self.last_usage = Usage(
+            input_tokens=n_in, output_tokens=int(trimmed.shape[1]),
+            n_images=len(images or []), n_calls=1, seconds=seconds)
         return out.strip()
 
 

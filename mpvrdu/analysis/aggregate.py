@@ -16,6 +16,13 @@ CONDITION_FIELDS = [
     "retrieval.method", "retrieval.top_k", "generation.modality",
     "generation.generator", "representation.parser", "representation.chunking",
 ]
+# Tier-1 post-processing toggles — extracted into each summary's condition so the
+# report can surface them, but kept OUT of CONDITION_FIELDS so the default tables
+# stay compact (they only matter for the Tier-1 sections).
+TIER1_FIELDS = [
+    "retrieval.k_strategy", "retrieval.rerank", "retrieval.expand",
+    "retrieval.expand_window",
+]
 
 
 def _get(d: dict, dotted: str, default=None):
@@ -56,6 +63,41 @@ def _mean(xs: list[float]) -> float:
     return sum(xs) / len(xs) if xs else 0.0
 
 
+def bootstrap_ci(values: list[float], n_resamples: int = 2000,
+                 alpha: float = 0.05, seed: int = 0) -> tuple[float, float]:
+    """Percentile bootstrap CI for the mean of `values` (e.g. per-question 0/1
+    correctness). Returns (low, high). With 1091 questions this turns point
+    estimates into defensible intervals for method comparisons."""
+    import numpy as np
+
+    if not values:
+        return (0.0, 0.0)
+    rng = np.random.default_rng(seed)
+    arr = np.asarray(values, dtype=float)
+    means = arr[rng.integers(0, len(arr), size=(n_resamples, len(arr)))].mean(axis=1)
+    lo, hi = np.quantile(means, [alpha / 2, 1 - alpha / 2])
+    return (float(lo), float(hi))
+
+
+def paired_diff_test(rows_a: list[dict], rows_b: list[dict],
+                     n_resamples: int = 2000, seed: int = 0) -> dict:
+    """Paired bootstrap on accuracy difference (A − B) over questions matched by
+    qid. Returns the mean diff, its CI, and whether it excludes 0 (significant)."""
+    import numpy as np
+
+    a = {r["qid"]: int(bool(r.get("correct"))) for r in rows_a if "qid" in r}
+    b = {r["qid"]: int(bool(r.get("correct"))) for r in rows_b if "qid" in r}
+    common = sorted(set(a) & set(b))
+    if not common:
+        return {"n": 0, "diff": 0.0, "ci": (0.0, 0.0), "significant": False}
+    d = np.array([a[q] - b[q] for q in common], dtype=float)
+    rng = np.random.default_rng(seed)
+    boot = d[rng.integers(0, len(d), size=(n_resamples, len(d)))].mean(axis=1)
+    lo, hi = (float(x) for x in np.quantile(boot, [0.025, 0.975]))
+    return {"n": len(common), "diff": float(d.mean()), "ci": (lo, hi),
+            "significant": lo > 0 or hi < 0}
+
+
 def summarize_run(path: str | Path) -> Optional[dict]:
     """Summarise one result file: overall + by question-type + by evidence-source.
 
@@ -89,8 +131,32 @@ def summarize_run(path: str | Path) -> Optional[dict]:
     for s, d in by_source.items():
         d["accuracy"] = d["correct"] / d["n"] if d["n"] else 0.0
 
+    # abstention / hallucination: on unanswerable Qs, did the model wrongly
+    # answer (hallucinate)? on answerable Qs, did it wrongly abstain?
+    unans = [r for r in rows if not bool(r.get("gold_answerable"))]
+    ans = [r for r in rows if bool(r.get("gold_answerable"))]
+    hallucination_rate = _mean([0.0 if bool(r.get("pred_abstained")) else 1.0
+                                for r in unans]) if unans else 0.0
+    over_abstention_rate = _mean([1.0 if bool(r.get("pred_abstained")) else 0.0
+                                  for r in ans]) if ans else 0.0
+
+    # cost proxy (only if the generator logged usage)
+    cost = {}
+    if any("input_tokens" in r for r in rows):
+        cost = {
+            "mean_input_tokens": _mean([float(r.get("input_tokens", 0)) for r in rows]),
+            "mean_output_tokens": _mean([float(r.get("output_tokens", 0)) for r in rows]),
+            "total_gen_seconds": sum(float(r.get("gen_seconds", 0)) for r in rows),
+            "mean_gen_seconds": _mean([float(r.get("gen_seconds", 0)) for r in rows]),
+        }
+
+    # mean pages actually fed to the generator (varies under adaptive-k/expansion)
+    mean_n_selected = _mean([float(r["n_selected"]) for r in rows
+                             if "n_selected" in r])
+
+    lo, hi = bootstrap_ci([float(c) for c in correct])
     cfg = (meta or {}).get("config", {})
-    condition = {f: _get(cfg, f) for f in CONDITION_FIELDS}
+    condition = {f: _get(cfg, f) for f in CONDITION_FIELDS + TIER1_FIELDS}
     return {
         "path": str(path),
         "config_hash": (meta or {}).get("config_hash"),
@@ -98,10 +164,15 @@ def summarize_run(path: str | Path) -> Optional[dict]:
         "condition": condition,
         "n": n,
         "accuracy": accuracy,
+        "accuracy_ci": [lo, hi],
         "f1": f1,
         "mean_recall_at_k": recall,
+        "mean_n_selected": mean_n_selected,
+        "hallucination_rate": hallucination_rate,
+        "over_abstention_rate": over_abstention_rate,
         "by_question_type": by_type,
         "by_evidence_source": by_source,
+        "cost": cost,
     }
 
 
@@ -118,12 +189,15 @@ def to_markdown_table(summaries: Iterable[dict],
     """Render run summaries as a Markdown table (condition columns + metrics)."""
     summaries = list(summaries)
     cond_cols = columns or CONDITION_FIELDS
-    headers = cond_cols + ["n", "accuracy", "f1", "recall@k"]
+    headers = cond_cols + ["n", "accuracy", "95% CI", "f1", "recall@k", "halluc."]
     lines = ["| " + " | ".join(headers) + " |",
              "| " + " | ".join("---" for _ in headers) + " |"]
     for s in summaries:
+        ci = s.get("accuracy_ci", [0, 0])
         cells = [str(s["condition"].get(c, "")) for c in cond_cols]
-        cells += [str(s["n"]), f"{s['accuracy']:.3f}", f"{s['f1']:.3f}",
-                  f"{s['mean_recall_at_k']:.3f}"]
+        cells += [str(s["n"]), f"{s['accuracy']:.3f}",
+                  f"[{ci[0]:.3f}, {ci[1]:.3f}]", f"{s['f1']:.3f}",
+                  f"{s['mean_recall_at_k']:.3f}",
+                  f"{s.get('hallucination_rate', 0):.3f}"]
         lines.append("| " + " | ".join(cells) + " |")
     return "\n".join(lines)

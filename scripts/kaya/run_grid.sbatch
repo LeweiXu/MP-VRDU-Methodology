@@ -26,6 +26,10 @@ echo "grid with generator=kaya_vlm model=$MODEL  HF_HOME=$HF_HOME"
 
 cd "$REPO"
 python scripts/run_grid.py \
-  --suite experiments/grid_local_3b.yaml \
+  --suite experiments/grid_kaya_7b.yaml \
   --generator kaya_vlm --model-id "$MODEL" \
   --results-root "$MPVRDU_RESULTS/grid"
+
+# auto-generate the analysis report + figures from whatever has completed
+python scripts/report.py --results "$MPVRDU_RESULTS/grid" \
+  --out "$MPVRDU_RESULTS/grid/report.md" || true

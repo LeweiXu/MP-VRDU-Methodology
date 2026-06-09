@@ -65,8 +65,21 @@ class InputBuilder:
                               text=text, n_pages=len(pages))
 
 
+@dataclass
+class Usage:
+    """Per-question cost proxy (context.md §8). Populated by each generator."""
+    input_tokens: int = 0       # tokens fed to the generator (the cost driver)
+    output_tokens: int = 0
+    n_images: int = 0
+    n_calls: int = 1            # LLM calls per question (1 for single-shot)
+    seconds: float = 0.0        # generation wall-clock
+
+
 class Generator(ABC):
     name: str = "base"
+
+    def __init__(self):
+        self.last_usage = Usage()
 
     @abstractmethod
     def answer(self, question: str, images: Optional[list[str]] = None,

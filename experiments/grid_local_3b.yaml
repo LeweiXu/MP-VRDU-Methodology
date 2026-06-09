@@ -61,3 +61,34 @@ substudies:
       retrieval.method:    [colpali]
       generation.modality: [image, text, both]
       retrieval.top_k:     [4]
+
+  # ---- Tier-1 corpus techniques (docs/corpus_techniques.md) ----
+  # All model-free (no extra checkpoint); rerank (#3) needs a staged LLM so it's
+  # run separately (configs/tier1/rerank_llm.yaml), not in the local grid.
+
+  # D: adaptive top-k (#1). fixed vs GMM vs k-means cut, retriever held constant.
+  # candidate_k bounds the pool the adaptive cut chooses from, so image modality
+  # never feeds more pages than the fixed top_k=8 run (>~10 page-images OOMs 12GB).
+  D_adaptive_k:
+    axes:
+      retrieval.method:     [bm25, colpali]
+      retrieval.k_strategy: [fixed, gmm, kmeans]
+      retrieval.candidate_k: [8]
+      generation.modality:  [image]
+      retrieval.top_k:      [8]
+
+  # E: selection expansion (#4/#5). none vs adjacent vs parent-section.
+  E_expand:
+    axes:
+      retrieval.method:    [bm25]
+      retrieval.expand:    [none, adjacent, parent_section]
+      generation.modality: [image]
+      retrieval.top_k:     [2]
+
+  # F: flat vs structure-aware chunking (#2). Text retriever; vary granularity.
+  F_chunking:
+    axes:
+      retrieval.method:       [dense]
+      representation.chunking: [page, chunk, section]
+      generation.modality:    [text]
+      retrieval.top_k:        [4]

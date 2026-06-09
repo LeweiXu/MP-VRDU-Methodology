@@ -50,3 +50,27 @@ def test_text_modality_needs_parser():
 
 def test_defaults_are_valid():
     RunConfig().validate()
+
+
+def test_tier1_enums_validate():
+    # valid Tier-1 toggles round-trip
+    cfg = dict_to_config({"retrieval": {
+        "method": "bm25", "k_strategy": "gmm", "expand": "adjacent",
+        "expand_window": 2, "rerank": "llm"}})
+    assert cfg.retrieval.k_strategy == "gmm"
+    # bad enum values raise
+    for bad in ({"k_strategy": "psychic"}, {"rerank": "telepathy"},
+                {"expand": "teleport"}):
+        with pytest.raises(ConfigError):
+            dict_to_config({"retrieval": {"method": "bm25", **bad}})
+
+
+def test_tier1_numeric_guards():
+    with pytest.raises(ConfigError):
+        dict_to_config({"retrieval": {"method": "bm25", "expand": "adjacent",
+                                      "expand_window": 0}})
+    with pytest.raises(ConfigError):
+        dict_to_config({"retrieval": {"method": "bm25", "candidate_k": -1}})
+    # rerank is meaningless for the baseline selectors
+    with pytest.raises(ConfigError):
+        dict_to_config({"retrieval": {"method": "oracle", "rerank": "llm"}})

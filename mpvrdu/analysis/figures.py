@@ -39,6 +39,28 @@ def topk_curve(series: dict[str, list[tuple[int, float]]], ylabel: str,
     return out_path
 
 
+def scatter(points: dict[str, tuple[float, float]], xlabel: str, ylabel: str,
+            out_path: str | Path, title: str = "") -> Path:
+    """points: {label -> (x, y)}. Each labelled point annotated (e.g. cost vs acc)."""
+    plt = _plt()
+    fig, ax = plt.subplots(figsize=(6, 4))
+    for label, (x, y) in points.items():
+        ax.scatter([x], [y])
+        ax.annotate(label, (x, y), fontsize=8, xytext=(4, 4),
+                    textcoords="offset points")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    if title:
+        ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
 def method_bars(values: dict[str, float], ylabel: str, out_path: str | Path,
                 floor: Optional[float] = None, ceiling: Optional[float] = None,
                 title: str = "") -> Path:

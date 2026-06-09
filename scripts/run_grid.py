@@ -21,9 +21,14 @@ freely and chip away at a long local grid.
 
 import argparse
 import gc
+import os
+import subprocess
 import sys
+import tempfile
 import traceback
 from pathlib import Path
+
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -65,6 +70,24 @@ def _out_path(root: Path, substudy: str, cfg) -> Path:
     return root / substudy / f"{cfg.name}__{cfg.hash()}.jsonl"
 
 
+def _run_isolated(cfg, path: Path) -> bool:
+    """Run one config in a FRESH subprocess so a hard CUDA OOM (which corrupts the
+    process's CUDA context) can't cascade into every later run. Each run gets a
+    clean GPU; the trade-off is reloading the dataset per run (cheap on a subset).
+    Returns True on success (exit 0)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(suffix=".yaml", prefix="gridcfg_")
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.safe_dump(cfg.to_dict(), f)
+        proc = subprocess.run(
+            [sys.executable, "-m", "mpvrdu.pipeline", "--config", tmp,
+             "--out", str(path)], env=os.environ.copy())
+        return proc.returncode == 0
+    finally:
+        os.unlink(tmp)
+
+
 def _is_complete(path: Path, expected_n: int) -> bool:
     if not path.exists():
         return False
@@ -85,8 +108,13 @@ def main():
     ap.add_argument("--generator", default=None, help="override generator (e.g. kaya_vlm)")
     ap.add_argument("--model-id", default=None)
     ap.add_argument("--load-in-4bit", action="store_true")
+    ap.add_argument("--seeds", type=int, nargs="+", default=None,
+                    help="run each condition once per seed (variance estimate)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--rerun", action="store_true", help="ignore existing results")
+    ap.add_argument("--isolate", action="store_true",
+                    help="run each config in its own subprocess (OOM-isolated; "
+                         "a clean CUDA context per run). Recommended on one GPU.")
     ap.add_argument("--aggregate-only", action="store_true")
     args = ap.parse_args()
 
@@ -98,6 +126,15 @@ def main():
             runs = [(s, c) for s, c in runs if s in set(args.only)]
         for _, cfg in runs:
             _apply_overrides(cfg, args)
+        if args.seeds:
+            import copy
+            expanded = []
+            for sub, cfg in runs:
+                for s in args.seeds:
+                    c = copy.deepcopy(cfg)
+                    c.seed = s
+                    expanded.append((sub, c.validate()))
+            runs = expanded
 
         log.info("suite expands to %d runs across %d sub-studies",
                  len(runs), len({s for s, _ in runs}))
@@ -130,8 +167,15 @@ def main():
                 continue
             log.info("[%d/%d] RUN %s/%s (n=%d)", idx, len(runs), sub, cfg.name, n)
             try:
-                run(cfg, dataset=ds, out_path=path)
-                done += 1
+                if args.isolate:
+                    if _run_isolated(cfg, path):
+                        done += 1
+                    else:
+                        failed += 1
+                        log.error("FAILED (subprocess) %s/%s", sub, cfg.name)
+                else:
+                    run(cfg, dataset=ds, out_path=path)
+                    done += 1
             except Exception:
                 failed += 1
                 log.error("FAILED %s/%s:\n%s", sub, cfg.name, traceback.format_exc())
