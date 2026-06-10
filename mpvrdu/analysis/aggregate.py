@@ -23,6 +23,9 @@ TIER1_FIELDS = [
     "retrieval.k_strategy", "retrieval.rerank", "retrieval.expand",
     "retrieval.expand_window",
 ]
+# RQ-axis fields the per-RQ reporter matches conditions on (kept out of the
+# default columns; the reasoning axis only matters for the RQ3 section).
+RQ_FIELDS = ["generation.reasoning"]
 
 
 def _get(d: dict, dotted: str, default=None):
@@ -156,7 +159,7 @@ def summarize_run(path: str | Path) -> Optional[dict]:
 
     lo, hi = bootstrap_ci([float(c) for c in correct])
     cfg = (meta or {}).get("config", {})
-    condition = {f: _get(cfg, f) for f in CONDITION_FIELDS + TIER1_FIELDS}
+    condition = {f: _get(cfg, f) for f in CONDITION_FIELDS + TIER1_FIELDS + RQ_FIELDS}
     return {
         "path": str(path),
         "config_hash": (meta or {}).get("config_hash"),

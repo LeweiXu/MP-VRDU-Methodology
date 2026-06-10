@@ -1,13 +1,22 @@
-# MP-VRDU Component-Analysis Harness
+# MP-VRDU Mechanism-Analysis Harness
 
 A controlled-comparison study on **Multi-Page Visually Rich Document
 Understanding** (MP-VRDU): answering questions over long PDFs where the evidence
 is sparse and scattered across pages. This repo is the experiment harness — it
-isolates the effect of each pipeline component (retrieval method, document
-representation, generation modality) on the **MMLongBench-Doc** benchmark.
+isolates the effect of each pipeline **mechanism** (retrieval *similarity vs
+relation-aware*, representation *fidelity & structure*, *reasoning* structure,
+*coarse-to-fine* narrowing) on the **MMLongBench-Doc** benchmark.
 
-- **`context.md`** — the study design (goals, sub-studies, tool inventory).
-- **`agent_build_plan.md`** — the staged engineering plan (Stages 0–7).
+The study analyses **mechanisms, not products**: each comparison tests a property
+of the pipeline (e.g. "relation-aware retrieval") with a directional, per-subset
+hypothesis against a declared control — not "tool X vs tool Y". Named tools
+(BM25, ColPali, MinerU, …) are just instantiations of a mechanism level.
+
+- **`docs/research_questions.md`** — the **GOVERNING** spec: the four research
+  questions (RQ1–RQ4), their hypotheses, discriminating subsets, and controls.
+- **`docs/pivot.md`** — the migration guide that reframed the old A/B/C
+  sub-studies into the RQ framing (preserve-and-wrap, not rewrite).
+- **`context.md`** — the study design (tool inventory, operating principles).
 - This README — how the code is organised and how to run everything.
 
 Everything runs locally for development with a tiny 3B VLM; switching to the
@@ -43,8 +52,21 @@ pip install -r requirements-gpu.txt      # + real VLMs, dense + visual retriever
 
 What's already installed in `~/venvs/cits4010-venv` on this box: the full stack
 (torch+CUDA, transformers, qwen-vl-utils, sentence-transformers, colpali-engine,
-rank-bm25, scikit-learn, pytesseract, matplotlib). `magic-pdf` (MinerU) is **not**
-installed — it's a heavy optional parser; configs that request it fail-soft.
+rank-bm25, scikit-learn, pytesseract, matplotlib). Current MinerU is installed
+separately because its Transformers requirements conflict with ColPali/Qwen:
+
+```bash
+python3.11 -m venv ~/venvs/mineru-venv
+~/venvs/mineru-venv/bin/pip install "mineru[pipeline]==3.2.3" six
+export MPVRDU_MINERU_PYTHON=~/venvs/mineru-venv/bin/python  # optional default
+```
+
+`six` is currently an undeclared dependency imported by MinerU's OCR pipeline.
+
+Every direct pipeline run writes a timestamped log under `logs/`. Grid runs
+write a suite log plus one condition log under
+`logs/<suite>/<substudy>/<run>__<hash>.log`. Use `--log-file PATH` to override a
+direct-run path and `MPVRDU_LOGLEVEL=DEBUG` for verbose diagnostics.
 
 ## 3. How it works (architecture)
 
@@ -92,11 +114,11 @@ per-document index is built once and reused.
 | `mpvrdu/data/slice.py` | 1 | dev-slice carving |
 | `mpvrdu/data/synthetic.py` | 1 | offline synthetic fixture (tests / smoke) |
 | `mpvrdu/data/load.py` | 1 | `DataConfig` → `Dataset` dispatch |
-| `mpvrdu/represent/` | 2/5 | parsers (PyMuPDF4LLM/MinerU/Tesseract) + chunking |
-| `mpvrdu/retrieve/` | 1/4 | selectors (none/oracle) + retrievers + hybrid + recall eval; Tier-1 post-processing (`postprocess.py` adaptive-k/expansion, `rerank.py`) |
-| `mpvrdu/generate/` | 3 | input builder + mock/local/Kaya VLM generators |
-| `mpvrdu/eval/` | 2 | answer normalisation, metrics (acc/F1/recall@k), rule + LLM judge |
-| `mpvrdu/analysis/` | 7 | aggregate JSONL → tables, CIs, oracle-gap, figures, report |
+| `mpvrdu/represent/` | RQ2 | parsers (PyMuPDF4LLM/MinerU/Tesseract) + chunking (flat/structure) |
+| `mpvrdu/retrieve/` | RQ1/RQ4 | selectors (none/oracle) + similarity retrievers + hybrid + **relation-aware `traverse.py`** + recall eval; post-processing (`postprocess.py` adaptive-k/expansion, `rerank.py` coarse-to-fine) |
+| `mpvrdu/generate/` | RQ3 | input builder + mock/local/Kaya VLM generators + **`reasoning.py`** (direct/cot/reflection/self-consistency/tot) |
+| `mpvrdu/eval/` | – | answer normalisation, metrics (acc/F1/recall@k), rule + LLM judge |
+| `mpvrdu/analysis/` | §4 | aggregate JSONL → tables, CIs, oracle-gap, figures, report; **`report_rq.py`** per-RQ hypothesis verdicts |
 | `mpvrdu/data/audit.py` | – | contamination-audit fingerprints (context.md §10) |
 | `mpvrdu/experiment.py` | – | expand an experiment suite into many `RunConfig`s |
 
@@ -195,21 +217,47 @@ python scripts/analyze.py --results results/grid --out results/grid/summary.md
 Tables are a pure function of the JSONL files (each embeds its own config), so the
 results section regenerates from raw outputs with one command.
 
-## 6. The sub-studies (one variable each)
+## 6. The research questions (one mechanism each)
 
-Defined as `substudies` in the grid suite; each is an axes cross-product.
+Defined as `substudies` in the grid suite; each study is an axes cross-product
+plus **RQ metadata** (its `rq` id, discriminating `subset`, declared `control`,
+and `hypotheses` — consumed by the reporter, ignored by the runner). Every study
+traces to a research question in `docs/research_questions.md` (the governing spec).
 
-| Sub-study | Varies | Held fixed |
-|-----------|--------|-----------|
-| **baselines** | retrieval ∈ {none, oracle} × modality | everything else — the floor & ceiling |
-| **A_retrieval** | retrieval method × modality (k=4) | representation (PyMuPDF4LLM), generator |
-| **A_topk** | top-k ∈ {1,2,4,8} on bm25 + colpali | method/modality |
-| **B_representation** | parser ∈ {pymupdf4llm, mineru, tesseract} | retriever (dense), modality (text) |
-| **C_modality** | modality ∈ {image, text, both} | retrieval (ColPali), representation |
+The fixed skeleton every study perturbs is the **reference pipeline**
+(`configs/reference.yaml`): dense text retriever (pinned embedder), PyMuPDF4LLM
+parser, plain CoT, text modality, fixed LLM judge, Qwen2.5-VL-7B. Each study
+changes exactly one mechanism and pins the rest to the reference.
 
-Sub-study B uses **text retrievers only** (visual retrievers don't consume the
-parser). For a visual retriever in text/both modality (sub-study C), the
-retrieved pages are parsed by the fixed default parser, stated in the config.
+| Study | RQ | Mechanism varied | Hypotheses | Discriminating subset |
+|-------|----|------------------|-----------|----------------------|
+| **baselines** | RQ1 control | retrieval ∈ {none, oracle} × modality | — (floor & ceiling) | — |
+| **RQ1_retrieval** | RQ1 | similarity signal: lexical/dense/visual + fusion | H1a, H1c | evidence source |
+| **RQ1_topk** | RQ1 | top-k ∈ {1,2,4,8} (non-monotonic) | — | — |
+| **RQ1_relation_aware** | RQ1 | similarity vs **relation-aware** (traverse, expand) | H1b | single vs cross-page |
+| **RQ2_representation** | RQ2 | parser fidelity ∈ {pymupdf4llm, mineru, tesseract} | H2a | evidence source |
+| **RQ2_chunking** | RQ2 | flat vs **structure-aware** chunking | H2b | single vs cross-page |
+| **RQ3_reasoning** | RQ3 | direct/cot/self_reflection/self_consistency/tot | H3a, H3b, H3c | single vs multi-hop |
+| **RQ4_coarse_to_fine** | RQ4 | single-pass vs retrieve→rerank→read (matched budget) | H4a, H4b | document length |
+| **crosscutting_modality** | — | modality ∈ {image, text, both} | — | — |
+
+- **RQ1's control** is the no-retrieval floor + oracle ceiling (retrieval is the
+  variable, so it can't be the fixed control). RQ2–RQ4 are measured against the
+  reference pipeline with the swept axis's non-tested components held fixed.
+- **RQ2 uses text retrievers only** (visual retrievers don't consume the parser).
+- **RQ3 holds the retrieved pages fixed** across the reasoning sweep, so any delta
+  is reasoning alone (the harness builds the evidence buffer once per question).
+- **RQ4 holds the final page budget fixed** (same top-k into the reader), so the
+  contrast is narrowing-vs-not, not more compute; the rerank stage's extra LLM
+  calls are logged as the cost co-axis.
+- A predicted **null** (e.g. H3c: ToT ≈ CoT) is reported as a first-class finding.
+
+Run the analysis with `--suite` to get the per-RQ **hypothesis-verdict** section
+(HELD / REFUTED / MIXED / NULL-CONFIRMED, with per-subset breakdowns):
+
+```bash
+python scripts/report.py --results results/grid --suite experiments/grid_local_3b.yaml
+```
 
 ## 7. Local vs Kaya
 
@@ -251,15 +299,17 @@ The dataset PDFs live under `data/` (also git-ignored).
 
 The code is Kaya-ready: it respects `HF_HOME`/`MPVRDU_*` env vars, loads models
 fully offline, and the grid runner is resumable. Scripts live in `scripts/kaya/`.
-See `kaya_cheatsheet.md` for cluster mechanics.
+See [docs/kaya_cheatsheet.md](docs/kaya_cheatsheet.md) for the complete setup,
+staging, validation, execution, monitoring, and recovery procedure.
 
 **One-time setup (LOGIN node — it has internet):**
 ```bash
 # 1. point the scripts at your project: edit scripts/kaya/env.sh
 #    (set MPVRDU_GROUP=/group/<yourproject>, MPVRDU_CUDA=cuda/<version>)
-# 2. create the conda env under /group + install deps
+# 2. create the main and separate MinerU environments under /group
 bash scripts/kaya/setup_conda_env.sh
-# 3. pre-download the dataset + all model weights into the /group HF cache
+bash scripts/kaya/setup_mineru_env.sh
+# 3. pre-download the dataset, all HF weights, and MinerU pipeline models
 bash scripts/kaya/prestage.sh
 mkdir -p logs
 ```
@@ -267,7 +317,8 @@ mkdir -p logs
 **Smoke test then run (COMPUTE node, via SLURM):**
 ```bash
 sbatch scripts/kaya/gpu_test.sbatch        # confirms GPU+CUDA before any model
-sbatch scripts/kaya/run_grid.sbatch        # full grid with the real 7B (offline)
+sbatch scripts/kaya/run_grid.sbatch --only baselines --max-questions 2
+sbatch scripts/kaya/run_grid.sbatch        # full resumable 7B grid (offline)
 sbatch scripts/kaya/run_config.sbatch configs/oracle.yaml   # a single condition
 squeue -u $USER                            # watch it
 ```
@@ -295,7 +346,8 @@ representation:
   dpi: 144                   # page-render resolution
   text_format: markdown
 retrieval:
-  method: bm25               # none | oracle | grep | bm25 | tfidf | dense | colpali | colqwen | hybrid
+  method: bm25               # none | oracle | grep | bm25 | tfidf | dense | colpali | colqwen | hybrid | traverse
+                             #   traverse = relation-aware structural section/tree navigation (RQ1, H1b)
   top_k: 4
   no_retrieval_pages: 10     # N for the first-N no-retrieval baseline
   embedding_model: null      # dense text encoder
@@ -314,6 +366,9 @@ generation:
   modality: image            # image | text | both
   generator: local_small_vlm # mock | local_small_vlm | kaya_vlm
   model_id: Qwen/Qwen2.5-VL-3B-Instruct
+  reasoning: direct          # direct | cot | self_reflection | self_consistency | tot  (RQ3 axis)
+  self_consistency_n: 5      # samples for self_consistency / tot branch width
+  reasoning_temperature: 0.7 # sampling temp for the parallel reasoning methods
   max_new_tokens: 128
   temperature: 0.0
   max_pixels: 602112         # cap vision tokens/page (fit 12GB); null = model default
@@ -355,9 +410,12 @@ report (`report.md`) is comprehensive:
 - **cost** — mean tokens to the generator + wall-clock per condition.
 - **sanity checks** — flags e.g. oracle < no-retrieval, or recall≈0 retrievers.
 - **figures** — top-k accuracy/recall curves, method bars with floor/ceiling.
+- **`comparisons.csv`** — one row per question/run with gold vs retrieved pages,
+  missing/extra pages, gold vs generated answers, a word-level diff, and failure
+  classification (`retrieval_miss`, `generation_or_judge_miss`, etc.).
 
 ```bash
-python scripts/report.py --results results/grid          # -> report.md + figures/
+python scripts/report.py --results results/grid  # -> report.md, comparisons.csv, figures/
 python scripts/contamination_audit.py --slice full       # fingerprint eval docs (§10)
 ```
 
@@ -381,8 +439,9 @@ other model). It is a fixed, declared experimental variable (context.md §6,§10
   cap bounds vision tokens per page. Two-phase keeps one model resident at a time.
 - **Tiny VLM ≠ reportable.** The local 3B is a code-path stand-in for the 7B/32B
   on Kaya. Never report numbers from the 3B (or from mock / synthetic).
-- **MinerU** needs `magic-pdf` (heavy, not installed) — its configs fail-soft.
-  Tesseract works locally (needs the `tesseract` binary, present here).
+- **MinerU** runs from `~/venvs/mineru-venv` and caches normalized page Markdown
+  in `.cache/mineru/`. Override the interpreter with `MPVRDU_MINERU_PYTHON`.
+  Tesseract needs the system `tesseract` binary.
 - **PyMuPDF is AGPL-3.0** — note for any code release; prefer MinerU (Apache) where
   licensing matters.
 - The HF dataset's recorded sizes for 2 PDFs are stale; `download_subset.py` /

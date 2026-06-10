@@ -12,18 +12,30 @@ Key analyses:
 
 from __future__ import annotations
 
+import csv
+import difflib
 from pathlib import Path
 from typing import Optional
 
 from .aggregate import (CONDITION_FIELDS, TIER1_FIELDS, aggregate_dir,
                         paired_diff_test, to_markdown_table)
-from ..results import read_rows
+from ..results import iter_results, read_rows
 
 BASELINE_METHODS = {"none", "oracle"}
 QUESTION_TYPES = ["single", "cross", "unanswerable"]
 # default values that mark a Tier-1 toggle as "off"
 TIER1_DEFAULTS = {"retrieval.k_strategy": "fixed", "retrieval.rerank": "none",
                   "retrieval.expand": "none"}
+
+COMPARISON_FIELDS = [
+    "substudy", "run_name", "config_hash", "result_file",
+    "retrieval_method", "top_k", "generation_modality", "parser",
+    "qid", "question_type", "question",
+    "gold_pages_1based", "retrieved_pages_1based",
+    "missing_gold_pages", "extra_retrieved_pages", "retrieval_status",
+    "recall_at_k", "gold_answer", "generated_answer", "answer_correct",
+    "failure_mode", "answer_diff",
+]
 
 
 def _cond(s: dict, key: str):
@@ -38,6 +50,114 @@ def _substudy(s: dict) -> str:
 
 def _name(s: dict) -> str:
     return s.get("name") or Path(s["path"]).stem
+
+
+def _answer_diff(gold: object, pred: object) -> str:
+    """Compact word-level diff: deletions are [-...-], insertions are {+...+}."""
+    gold_words = str(gold or "").split()
+    pred_words = str(pred or "").split()
+    if gold_words == pred_words:
+        return "(exact match)"
+    out = []
+    matcher = difflib.SequenceMatcher(a=gold_words, b=pred_words)
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        old = " ".join(gold_words[i1:i2])
+        new = " ".join(pred_words[j1:j2])
+        if op == "equal":
+            out.append(old)
+        elif op == "delete":
+            out.append(f"[-{old}-]")
+        elif op == "insert":
+            out.append(f"{{+{new}+}}")
+        else:
+            out.extend((f"[-{old}-]", f"{{+{new}+}}"))
+    return " ".join(part for part in out if part)
+
+
+def _comparison_row(path: Path, meta: Optional[dict], row: dict) -> dict:
+    cfg = (meta or {}).get("config", {})
+    retrieval = cfg.get("retrieval", {})
+    generation = cfg.get("generation", {})
+    representation = cfg.get("representation", {})
+
+    gold = sorted(set(row.get("evidence_pages") or []))
+    selected = [int(p) + 1 for p in (row.get("selected_pages_0based") or [])]
+    selected_set = set(selected)
+    missing = sorted(set(gold) - selected_set)
+    extra = [p for p in selected if p not in set(gold)]
+
+    if not gold:
+        retrieval_status = "not_annotated"
+    elif missing:
+        retrieval_status = "miss"
+    else:
+        retrieval_status = "all_gold_selected"
+
+    correct = bool(row.get("correct"))
+    if correct:
+        failure_mode = "correct"
+    elif not bool(row.get("gold_answerable", True)):
+        failure_mode = "failed_abstention"
+    elif missing:
+        failure_mode = "retrieval_miss"
+    elif not gold:
+        failure_mode = "answer_error_no_gold_pages"
+    else:
+        failure_mode = "generation_or_judge_miss"
+
+    return {
+        "substudy": path.parent.name,
+        "run_name": cfg.get("name") or path.stem,
+        "config_hash": (meta or {}).get("config_hash", ""),
+        "result_file": str(path),
+        "retrieval_method": retrieval.get("method", ""),
+        "top_k": retrieval.get("top_k", ""),
+        "generation_modality": generation.get("modality", ""),
+        "parser": representation.get("parser", ""),
+        "qid": row.get("qid", ""),
+        "question_type": row.get("question_type", ""),
+        "question": row.get("question", ""),
+        "gold_pages_1based": " ".join(map(str, gold)),
+        "retrieved_pages_1based": " ".join(map(str, selected)),
+        "missing_gold_pages": " ".join(map(str, missing)),
+        "extra_retrieved_pages": " ".join(map(str, extra)),
+        "retrieval_status": retrieval_status,
+        "recall_at_k": row.get("recall_at_k", ""),
+        "gold_answer": row.get("gold", ""),
+        "generated_answer": row.get("pred", ""),
+        "answer_correct": correct,
+        "failure_mode": failure_mode,
+        "answer_diff": _answer_diff(row.get("gold"), row.get("pred")),
+    }
+
+
+def write_comparisons_csv(results_dir: str | Path,
+                          out_path: str | Path) -> int:
+    """Write one inspectable row per question per completed run.
+
+    Gold pages are already 1-based; retrieved pages are converted from the
+    pipeline's 0-based indices before missing/extra page sets are calculated.
+    Returns the number of question rows written.
+    """
+    paths = sorted(Path(results_dir).glob("**/*.jsonl"))
+    comparisons = []
+    for path in paths:
+        meta = None
+        rows = []
+        for item in iter_results(path):
+            if item.get("kind") == "meta":
+                meta = item
+            elif "correct" in item:
+                rows.append(item)
+        comparisons.extend(_comparison_row(path, meta, row) for row in rows)
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=COMPARISON_FIELDS)
+        writer.writeheader()
+        writer.writerows(comparisons)
+    return len(comparisons)
 
 
 def oracle_gap(summaries: list[dict]) -> list[dict]:
@@ -286,8 +406,13 @@ def _by_substudy_section(summaries: list[dict]) -> list[str]:
     return parts
 
 
-def build_report(results_dir: str | Path, fig_dir: Optional[str | Path] = None) -> str:
-    """Assemble the full markdown report; write figures if matplotlib is present."""
+def build_report(results_dir: str | Path, fig_dir: Optional[str | Path] = None,
+                 suite: Optional[str | Path] = None) -> str:
+    """Assemble the full markdown report; write figures if matplotlib is present.
+
+    When ``suite`` (a grid suite YAML) is given, its per-study RQ metadata drives a
+    leading per-RQ analysis section with hypothesis verdicts (docs/pivot.md Step 3).
+    """
     summaries = aggregate_dir(results_dir, pattern="**/*.jsonl")
     if not summaries:
         return "# MP-VRDU results\n\n_No completed results found._\n"
@@ -305,6 +430,15 @@ def build_report(results_dir: str | Path, fig_dir: Optional[str | Path] = None) 
     warns = sanity_checks(summaries)
     if warns:
         parts += ["## ⚠ Sanity warnings\n"] + [f"- {w}" for w in warns] + [""]
+
+    # leading per-RQ analysis (hypothesis verdicts) when a suite's metadata is given
+    if suite is not None:
+        from .report_rq import rq_sections
+        from ..experiment import load_suite_metadata
+
+        rq_md = rq_sections(summaries, load_suite_metadata(suite))
+        if rq_md:
+            parts += [rq_md, ""]
 
     parts += ["## All conditions\n", to_markdown_table(summaries), ""]
 

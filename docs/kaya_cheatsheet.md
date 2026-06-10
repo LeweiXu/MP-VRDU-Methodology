@@ -1,190 +1,313 @@
-# Kaya / SLURM Cheatsheet (for ML / VLM work)
+# Kaya Setup and Pipeline Runbook
 
-> Adapted for this project from the Lister Lab Kaya tutorial
-> (github.com/cpflueger2016/Kaya-ListerLab-Tutorial), which is written for
-> bioinformatics. The SLURM mechanics carry over; the ML-specific parts
-> (GPU requests, offline model loading, CUDA/PyTorch) are added here.
-> Confirm cluster-specific details (partition names, GRES syntax, your /group
-> path) with your supervisor or UWA HPC docs — they change over time.
+This is the end-to-end procedure for running MP-VRDU on UWA Kaya. Commands
+marked **LOGIN** use the internet-facing login node. Commands marked **COMPUTE**
+must run through SLURM. Never load models or run experiments on the login node.
 
-## The one rule that matters most
+Kaya module names, GPU partitions, and driver versions can change. Confirm them
+with UWA HPC documentation or `module avail` before the first installation.
 
-**Never run compute on the login (head) node.** SSH lands you there. It is for
-editing files, installing software, and submitting jobs ONLY. Loading a VLM on
-the login node will hog shared memory and get noticed. Always get a compute node
-first (interactive `srun` for dev, `sbatch` for real runs).
+## 1. Clone and Configure the Repository (LOGIN)
 
-## Getting started (first session, in order)
+Use `/group` for environments, datasets, models, results, and application logs:
 
 ```bash
-# 1. SSH in (needs UWA VPN if off-campus)
 ssh <username>@kaya.hpc.uwa.edu.au
-
-# 2. Find your group storage path (where envs, models, data live — has space)
-ls /group/                        # locate your project dir, e.g. /group/<project>
-
-# 3. See available software modules
-module avail                      # full list
-module avail cuda                 # filter for CUDA
-module list                       # what's currently loaded (none by default)
+mkdir -p /group/<project>/repos
+cd /group/<project>/repos
+git clone <repository-url> CITS4011
+cd CITS4011
+mkdir -p logs       # required before sbatch opens logs/%x_%j.{out,err}
 ```
 
-## Modules
+Edit `scripts/kaya/env.sh` and replace `/group/CHANGE_ME`. Verify or override:
 
 ```bash
-module load gcc/9.4.0             # compiler many things need; consider adding to ~/.bashrc
-module load Anaconda3/2021.05     # Conda (check exact version with `module avail`)
-module load cuda/<version>        # MUST match your PyTorch build's CUDA version
-module unload <name>              # if a module clashes with a conda install
+export MPVRDU_GROUP=/group/<project>
+export MPVRDU_ANACONDA=Anaconda3/2021.05
+export MPVRDU_CUDA=cuda/<available-version>
+export MPVRDU_TORCH_INDEX_URL=https://download.pytorch.org/whl/cuXXX
+export MPVRDU_MINERU_TORCH_INDEX_URL=https://download.pytorch.org/whl/cuXXX
 ```
 
-Add frequently-used loads to `~/.bashrc` (`nano ~/.bashrc`, then
-`source ~/.bashrc`). Do NOT install anything into the conda `base` env.
+Persist these values in `env.sh`; batch jobs source that file independently.
+Select PyTorch wheel indexes compatible with Kaya's NVIDIA driver. MinerU needs
+PyTorch 2.6 or newer, so its index may differ from the main environment.
 
-## Conda environment (install under /group, NOT $HOME)
+Useful discovery commands:
 
 ```bash
-module load Anaconda3/2021.05
-
-# Create env on the LOGIN node (it has internet; compute nodes do not)
-conda create -p /group/<project>/conda_environments/mpvrdu python=3.11 -y
-conda activate /group/<project>/conda_environments/mpvrdu
-
-# Install PyTorch matching the cluster's CUDA module, then deps.
-# (Get the exact install line from pytorch.org for the cluster's CUDA version.)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install "transformers>=4.49" accelerate qwen-vl-utils
-pip install datasets sentence-transformers rank_bm25 pillow pymupdf
+module avail Anaconda
+module avail cuda
+sinfo --noheader --format="%P"
+scontrol show partition gpu
 ```
 
-## Interactive session (for development & debugging — get a GPU!)
+The supplied SBATCH files assume `--partition=gpu` and `--gres=gpu:1`. Change
+those directives if Kaya currently uses different names.
 
-The tutorial's example does NOT request a GPU. For ML you must add `--gres`:
+## 2. Create Both Environments (LOGIN)
+
+The main environment cannot also host MinerU: MP-VRDU pins Transformers 5.3 for
+Qwen/ColPali, while MinerU requires Transformers below 5.
 
 ```bash
-srun \
-  --time=1:00:00 \
-  --partition=gpu \
-  --gres=gpu:1 \
-  --nodes=1 --ntasks=1 \
-  --cpus-per-task=4 \
-  --mem=32G \
-  --pty /bin/bash -l
-
-# ALWAYS `exit` when done — the session walls off the GPU even when idle.
+bash scripts/kaya/setup_conda_env.sh
+bash scripts/kaya/setup_mineru_env.sh
 ```
 
-Confirm `--partition` and `--gres` syntax for Kaya's GPU nodes; GRES naming
-(e.g. `gpu:1` vs `gpu:a100:1`) is cluster-specific.
+The resulting environments are:
 
-## The "is my GPU stack alive" smoke test (do this FIRST, before any model)
+```text
+/group/<project>/conda_environments/mpvrdu
+/group/<project>/conda_environments/mineru
+```
 
-Submit this tiny job. If it prints `True`, your env + GPU request + CUDA all work
-and you've de-risked everything structural before touching a model.
+The full grid also needs the Tesseract executable. Install it into the main
+environment if `command -v tesseract` fails:
 
 ```bash
-# save as gpu_test.sh, submit with: sbatch gpu_test.sh
-#!/bin/bash --login
-#SBATCH --job-name=gpu_test
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --nodes=1 --ntasks=1 --cpus-per-task=4
-#SBATCH --mem=16G
-#SBATCH --time=0:05:00
-#SBATCH --output=gpu_test_%j.out
-
-module load Anaconda3/2021.05
-module load cuda/<version>
-conda activate /group/<project>/conda_environments/mpvrdu
-python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
+source scripts/kaya/env.sh
+load_modules
+conda install -p "$MPVRDU_ENV" -c conda-forge tesseract -y
 ```
 
-## Batch job template (for real runs)
+Check the installations without running model inference:
 
 ```bash
-#!/bin/bash --login
-#SBATCH --job-name=mpvrdu_eval
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --nodes=1 --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --time=8:00:00
-#SBATCH --output=logs/%x_%j.out      # %x=jobname %j=jobid
-#SBATCH --error=logs/%x_%j.err
-#SBATCH --mail-user=<you>@uwa.edu.au
-#SBATCH --mail-type=BEGIN,END,FAIL
-
-echo "Job $SLURM_JOB_ID started at $(date)"
-
-module load gcc/9.4.0
-module load Anaconda3/2021.05
-module load cuda/<version>
-conda activate /group/<project>/conda_environments/mpvrdu
-module list
-
-# CRITICAL: compute nodes have no internet. Point HF at local /group cache
-# and force offline mode so it never tries to phone home mid-job.
-export HF_HOME=/group/<project>/hf_cache
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
-
-python run_eval.py --config configs/dense_topk5.yaml
-
-echo "Job finished at $(date)"
+source scripts/kaya/env.sh
+load_modules
+activate_env
+python -m pip check
+python -c "import torch, transformers, colpali_engine; print(torch.__version__, transformers.__version__)"
+"$MPVRDU_MINERU_PYTHON" -m pip check
+tesseract --version
 ```
 
-## Downloading models & data (do this on the LOGIN node — it has internet)
+## 3. Stage Data and Every Model (LOGIN)
 
-Compute nodes are offline, so pre-stage everything first:
+Compute nodes have no internet. The following downloads the full
+`yubo2333/MMLongBench-Doc` dataset and all models referenced by the Kaya grid,
+hand-written dense configs, visual retrievers, LLM judge/reranker, and MinerU:
 
 ```bash
-# on the login node
-export HF_HOME=/group/<project>/hf_cache
-pip install huggingface_hub
-huggingface-cli download Qwen/Qwen2.5-VL-7B-Instruct --local-dir /group/<project>/models/qwen25vl7b
-# datasets similarly via `datasets.load_dataset(...)` once, which populates HF_HOME
+source scripts/kaya/env.sh
+bash scripts/kaya/prestage.sh
 ```
 
-## Job management
+This can require tens of gigabytes. Check quota first:
 
 ```bash
-sbatch job.sh                     # submit a batch job
-squeue -u <username>              # your jobs in the queue
-squeue -p gpu                     # everything on the gpu partition
-scancel <JOB_ID>                  # kill a job
-sacct                             # history / status of your jobs
-sacct -j <JOB_ID> --format=JobID,JobName,State,Elapsed,MaxRSS,ReqTRES
-scontrol show node <nodename>     # what's free on a node
-sinfo --noheader --format="%P"    # list partitions
+quota -s
+du -sh "$HF_HOME" "$MPVRDU_MMLB_DIR"
 ```
 
-## Partitions / wall-time limits (from the Lister tutorial — VERIFY current values)
+`prestage.sh` is safe to rerun after an interrupted download. To use the 32B
+generator, uncomment its download in that script before staging.
 
-| Partition | Time limit    | Notes                                    |
-|-----------|---------------|------------------------------------------|
-| work      | 3 days        | long CPU tasks                           |
-| long      | 7 days        | very long tasks                          |
-| gpu       | 3 days        | **GPU jobs go here**                     |
-| test      | 15 min        | quick script tests                       |
-| peb       | 14 days       | Lister-lab exclusive (may not be yours)  |
+Important staged paths:
 
-## Day-to-day workflow
+| Artifact | Location |
+|---|---|
+| Hugging Face and MinerU models | `$HF_HOME` |
+| PDFs and benchmark parquet | `$MPVRDU_MMLB_DIR` |
+| rendered page cache | `$MPVRDU_RENDER_CACHE` |
+| results | `$MPVRDU_RESULTS` |
+| application logs | `$MPVRDU_LOGS` |
+| MinerU local-model map | `$MINERU_TOOLS_CONFIG_JSON` |
 
-1. SSH to login node.
-2. `git pull` your code; edit on the login node (or push from your laptop).
-3. Quick check → `test` partition or a short interactive `srun`.
-4. Real run → `sbatch` a batch script, then `squeue`/`sacct` to watch it.
-5. Outputs land in your `--output` log path and wherever your script writes
-   (write results to `/group`, not `$HOME`).
+## 4. Validate Configuration (LOGIN)
 
-## Gotchas specific to this project
+These commands only inspect configuration and do not load models:
 
-- **No internet on compute nodes** → pre-download on login node, set
-  `HF_HUB_OFFLINE=1`. This is the #1 thing that breaks first batch jobs.
-- **CUDA/PyTorch mismatch** → match your `pip install torch` CUDA suffix to the
-  `module load cuda/<version>` you use. Mismatches give cryptic runtime errors.
-- **Disk space** → models + PDF corpora are large; keep everything under `/group`,
-  not `$HOME` (which is small).
-- **`--mem` vs `--mem-per-cpu`** → the tutorial uses `--mem-per-cpu`; for a single
-  GPU job `--mem=64G` (total) is usually simpler. Don't set both.
+```bash
+source scripts/kaya/env.sh
+load_modules
+activate_env
+python scripts/run_grid.py \
+  --suite experiments/grid_kaya_7b.yaml \
+  --results-root "$MPVRDU_RESULTS/grid" \
+  --logs-root "$MPVRDU_LOGS" \
+  --dry-run
+```
+
+The suite should expand to 64 conditions. Confirm the dataset is visible:
+
+```bash
+python -c "from mpvrdu.config import DataConfig; from mpvrdu.data.load import load_dataset; d=load_dataset(DataConfig(slice='full', max_questions=1)); print(len(d), list(d.documents))"
+```
+
+## 5. Validate the GPU Stack (COMPUTE)
+
+Submit the supplied five-minute job:
+
+```bash
+sbatch scripts/kaya/gpu_test.sbatch
+squeue -u "$USER"
+```
+
+Inspect `logs/mpvrdu_gpu_test_<jobid>.out`. Both the main and MinerU
+environments must report CUDA available. If either reports `False`, stop and
+fix the CUDA module, driver-compatible PyTorch wheel, or GPU request.
+
+For interactive debugging:
+
+```bash
+srun --partition=gpu --gres=gpu:1 --nodes=1 --ntasks=1 \
+  --cpus-per-task=8 --mem=64G --time=1:00:00 --pty /bin/bash -l
+source scripts/kaya/env.sh
+load_modules
+activate_env
+set_offline
+# run diagnostics, then always:
+exit
+```
+
+## 6. Run Smoke Tests (COMPUTE)
+
+First run the synthetic, mocked pipeline:
+
+```bash
+sbatch scripts/kaya/run_config.sbatch configs/smoke.yaml
+```
+
+Then run a small real-model check over two questions:
+
+```bash
+sbatch scripts/kaya/run_grid.sbatch \
+  --only baselines --max-questions 2
+```
+
+Do not start the full grid until both jobs finish successfully. The small real
+run verifies offline Qwen loading, PDF rendering, generation, scoring, result
+writing, and per-condition logging.
+
+## 7. Run One Pipeline Condition
+
+Submit any single YAML configuration:
+
+```bash
+sbatch scripts/kaya/run_config.sbatch configs/oracle.yaml
+sbatch scripts/kaya/run_config.sbatch configs/subA/colpali_image.yaml
+sbatch scripts/kaya/run_config.sbatch configs/subB/dense_mineru_text.yaml
+```
+
+The script writes JSONL to `$MPVRDU_RESULTS/<config-name>.jsonl` and a detailed
+application log to `$MPVRDU_LOGS/config/`. A rerun of the same single config
+overwrites that fixed JSONL path.
+
+## 8. Run the Full Resumable Grid
+
+The default command uses Qwen2.5-VL-7B:
+
+```bash
+sbatch scripts/kaya/run_grid.sbatch
+```
+
+For easier scheduling, run sub-studies separately:
+
+```bash
+sbatch scripts/kaya/run_grid.sbatch --only baselines
+sbatch scripts/kaya/run_grid.sbatch --only A_retrieval
+sbatch scripts/kaya/run_grid.sbatch --only B_parser
+sbatch scripts/kaya/run_grid.sbatch --only B_chunking
+sbatch scripts/kaya/run_grid.sbatch --only C_modality
+```
+
+Run these sequentially unless you intentionally want several GPUs/jobs writing
+to the shared summary files. Resubmitting the same command skips completed
+conditions. If a wall-time limit kills a condition, that partial condition
+restarts while earlier completed JSONL files are retained.
+
+To use the staged 32B model:
+
+```bash
+sbatch --export=ALL,MPVRDU_MODEL=Qwen/Qwen2.5-VL-32B-Instruct \
+  scripts/kaya/run_grid.sbatch --only baselines
+```
+
+The supplied job requests one GPU. A 32B BF16 model requires an appropriately
+sized GPU; do not assume it fits an A100 40GB. Adjust GRES or quantization only
+as an explicit experimental change.
+
+## 9. Monitor Runs and Read Errors
+
+```bash
+squeue -u "$USER"
+sacct -j <jobid> --format=JobID,JobName,State,Elapsed,MaxRSS,ReqTRES
+scancel <jobid>
+tail -f logs/mpvrdu_grid_<jobid>.out
+```
+
+SLURM captures the outer process in `logs/*.out` and `logs/*.err`. The
+repository also writes:
+
+```text
+$MPVRDU_LOGS/grid_kaya_7b__<timestamp>.log
+$MPVRDU_LOGS/grid_kaya_7b/<substudy>/<run>__<hash>.log
+```
+
+Per-run logs contain the resolved config, model output, Python traceback, and
+subprocess exit code. Check these first when a condition is absent from the
+summary.
+
+## 10. Generate and Inspect Results
+
+`run_grid.sbatch` generates a report after each job. Regenerate it manually:
+
+```bash
+source scripts/kaya/env.sh
+load_modules
+activate_env
+python scripts/report.py \
+  --results "$MPVRDU_RESULTS/grid" \
+  --out "$MPVRDU_RESULTS/grid/report.md"
+```
+
+Outputs include:
+
+```text
+$MPVRDU_RESULTS/grid/summary.md
+$MPVRDU_RESULTS/grid/report.md
+$MPVRDU_RESULTS/grid/comparisons.csv
+$MPVRDU_RESULTS/grid/figures/
+```
+
+Inspect one run or list all result files:
+
+```bash
+python scripts/inspect_run.py "$MPVRDU_RESULTS/grid"
+python scripts/inspect_run.py <result.jsonl> --errors-only
+python scripts/inspect_run.py <result.jsonl> --retrieval-misses --full
+```
+
+## 11. Common Failures
+
+- **Offline model error:** rerun `prestage.sh` on the login node. Do not disable
+  offline mode on compute nodes.
+- **CUDA unavailable or undefined symbol:** the loaded CUDA module, NVIDIA
+  driver, and selected PyTorch wheel are incompatible.
+- **ColPali adapter mismatch/OOM:** verify the main environment retained
+  `transformers>=5.3,<5.4` and `torch<2.12`.
+- **MinerU tries to download:** verify `MINERU_MODEL_SOURCE=local`,
+  `$MINERU_TOOLS_CONFIG_JSON`, and `$MPVRDU_MINERU_PYTHON`.
+- **Tesseract condition missing:** verify `tesseract --version` inside
+  `$MPVRDU_ENV`.
+- **SLURM job never starts:** inspect partition/GRES availability with `sinfo`
+  and `squeue -p gpu`.
+- **No SLURM log:** create the repository's `logs/` directory before `sbatch`;
+  SLURM opens output files before executing the script.
+- **Quota or permission error:** run `quota -s`, `df -h`, and confirm every
+  `MPVRDU_*` path points to writable `/group` storage.
+
+## 12. Day-to-Day Sequence
+
+```text
+LOGIN:   git pull
+LOGIN:   update env/model cache if dependencies or configs changed
+LOGIN:   run the grid dry-run
+COMPUTE: submit gpu test after environment/CUDA changes
+COMPUTE: submit a small real-model run after model/config changes
+COMPUTE: submit or resume the required sub-study
+LOGIN:   inspect logs, regenerate report, archive results
+```

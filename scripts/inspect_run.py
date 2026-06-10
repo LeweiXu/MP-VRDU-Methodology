@@ -7,7 +7,7 @@ you can see whether a wrong answer was a retrieval miss (evidence not selected)
 or a generation miss (evidence selected but answered wrong).
 
     # everything in a run:
-    python scripts/inspect_run.py results/grid/A_retrieval/A_retrieval__bm25__image__4__<hash>.jsonl
+    python scripts/inspect_run.py results/grid/RQ1_retrieval/RQ1_retrieval__bm25__image__4__<hash>.jsonl
     # only the questions it got wrong:
     python scripts/inspect_run.py <file> --errors-only
     # only answerable questions where retrieval missed a gold page:

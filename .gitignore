@@ -231,3 +231,6 @@ weights/
 
 # SLURM job logs
 logs/
+
+AGENTS.md
+CLAUDE.md

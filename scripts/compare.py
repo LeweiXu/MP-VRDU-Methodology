@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Is condition A significantly better than condition B? (paired bootstrap)
 
-    python scripts/compare.py results/grid/A_retrieval/colqwen...jsonl \
-                              results/grid/A_retrieval/bm25...jsonl
+    python scripts/compare.py results/grid/RQ1_retrieval/colqwen...jsonl \
+                              results/grid/RQ1_retrieval/bm25...jsonl
 
 Pairs the two runs' per-question correctness by qid and reports the accuracy
 difference (A − B) with a 95% CI; "significant" means the CI excludes 0.

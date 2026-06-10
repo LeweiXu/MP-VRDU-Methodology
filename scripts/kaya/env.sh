@@ -8,15 +8,24 @@
 export MPVRDU_GROUP="${MPVRDU_GROUP:-/group/CHANGE_ME}"   # your project dir
 export MPVRDU_CUDA="${MPVRDU_CUDA:-cuda/12.1}"            # match the torch build
 export MPVRDU_ANACONDA="${MPVRDU_ANACONDA:-Anaconda3/2021.05}"
+export MPVRDU_TORCH_INDEX_URL="${MPVRDU_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}"
+# MinerU requires torch>=2.6. Set this to a CUDA wheel index supported by Kaya's
+# NVIDIA driver; it may need to differ from the main environment.
+export MPVRDU_MINERU_TORCH_INDEX_URL="${MPVRDU_MINERU_TORCH_INDEX_URL:-$MPVRDU_TORCH_INDEX_URL}"
 # ---------------------------------------------------------------------------
 
 # Derived paths (all under /group)
 export MPVRDU_ENV="${MPVRDU_ENV:-$MPVRDU_GROUP/conda_environments/mpvrdu}"
+export MPVRDU_MINERU_ENV="${MPVRDU_MINERU_ENV:-$MPVRDU_GROUP/conda_environments/mineru}"
+export MPVRDU_MINERU_PYTHON="${MPVRDU_MINERU_PYTHON:-$MPVRDU_MINERU_ENV/bin/python}"
 export MPVRDU_CACHE="${MPVRDU_CACHE:-$MPVRDU_GROUP/mpvrdu_cache}"      # torch hub etc.
 export HF_HOME="${HF_HOME:-$MPVRDU_GROUP/hf_cache}"                   # HF models+datasets
+export TORCH_HOME="${TORCH_HOME:-$MPVRDU_CACHE/torch}"
 export MPVRDU_MMLB_DIR="${MPVRDU_MMLB_DIR:-$MPVRDU_GROUP/data/mmlongbench}"
 export MPVRDU_RENDER_CACHE="${MPVRDU_RENDER_CACHE:-$MPVRDU_GROUP/mpvrdu_cache/renders}"
 export MPVRDU_RESULTS="${MPVRDU_RESULTS:-$MPVRDU_GROUP/mpvrdu_results}"
+export MPVRDU_LOGS="${MPVRDU_LOGS:-$MPVRDU_GROUP/mpvrdu_logs}"
+export MINERU_TOOLS_CONFIG_JSON="${MINERU_TOOLS_CONFIG_JSON:-$MPVRDU_GROUP/mineru.json}"
 
 if [[ "$MPVRDU_GROUP" == *CHANGE_ME* ]]; then
   echo "!! Set MPVRDU_GROUP to your /group project path (see scripts/kaya/env.sh)" >&2
@@ -40,4 +49,5 @@ set_offline() {
   export HF_HUB_OFFLINE=1
   export TRANSFORMERS_OFFLINE=1
   export HF_DATASETS_OFFLINE=1
+  export MINERU_MODEL_SOURCE=local
 }

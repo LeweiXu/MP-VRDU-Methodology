@@ -12,4 +12,5 @@ from .report import (abstention_table, build_report, cost_table,
                      evidence_source_table, oracle_gap, pairwise_significance,
                      question_type_table, recall_accuracy_correlation,
                      sanity_checks, seed_variance, tier1_table,
-                     topk_series)  # noqa: F401
+                     topk_series, write_comparisons_csv)  # noqa: F401
+from .report_rq import (doc_length_bin, rq_sections)  # noqa: F401

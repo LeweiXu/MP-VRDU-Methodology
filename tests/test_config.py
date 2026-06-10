@@ -74,3 +74,31 @@ def test_tier1_numeric_guards():
     # rerank is meaningless for the baseline selectors
     with pytest.raises(ConfigError):
         dict_to_config({"retrieval": {"method": "oracle", "rerank": "llm"}})
+
+
+def test_reasoning_axis_enums_validate():
+    # RQ3: every reasoning level round-trips
+    for r in ("direct", "cot", "self_reflection", "self_consistency", "tot"):
+        assert dict_to_config({"generation": {"reasoning": r}}).generation.reasoning == r
+    with pytest.raises(ConfigError):
+        dict_to_config({"generation": {"reasoning": "telepathy"}})
+    # parallel methods need a positive sample count
+    with pytest.raises(ConfigError):
+        dict_to_config({"generation": {"reasoning": "self_consistency",
+                                       "self_consistency_n": 0}})
+
+
+def test_traverse_is_a_valid_retrieval_method():
+    # RQ1 relation-aware structural traversal
+    assert dict_to_config({"retrieval": {"method": "traverse"}}).retrieval.method == "traverse"
+
+
+def test_reference_config_is_the_control():
+    """docs/research_questions.md §1: reference.yaml is the declared control."""
+    cfg = load_config("configs/reference.yaml")
+    assert cfg.name == "reference"
+    assert cfg.retrieval.method == "dense"          # modality-neutral midpoint
+    assert cfg.generation.reasoning == "cot"        # plain single-pass CoT
+    assert cfg.generation.modality == "text"
+    assert cfg.judge.type == "llm"                  # fixed, faithful scoring
+    assert cfg.retrieval.embedding_model           # embedder is pinned + declared

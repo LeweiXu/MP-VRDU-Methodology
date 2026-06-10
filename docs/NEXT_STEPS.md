@@ -33,8 +33,9 @@ extensions are worth the compute. Companion to `context.md` (study design) and
    but never run against a real judge model. Stage e.g. Qwen2.5-7B-Instruct on
    Kaya, run key conditions with `judge: {type: llm, model_id: ...}`, and report
    rule-vs-LLM-judge deltas (shows how much the scorer matters).
-3. **MinerU** parser never actually run (magic-pdf not installed) — install on
-   Kaya to complete sub-study B, or drop it and say so.
+3. **Run MinerU on Kaya** — the current MinerU parser has passed a real local
+   GPU parse. Install its separate environment and stage its models on Kaya as
+   documented in `docs/kaya_cheatsheet.md` to complete sub-study B at scale.
 
 ## High-value extensions (ranked)
 

@@ -4,6 +4,13 @@
 > sub-studies, the tool inventory, and the fixed scaffolding. This file is the
 > staged engineering plan to implement it.
 > Last updated: 2026-06-08.
+>
+> **NOTE (reframed 2026-06-10):** the study was reframed from component
+> "sub-studies A/B/C" to **mechanism research questions RQ1–RQ4**
+> (`docs/research_questions.md`, migration in `docs/pivot.md`). The Stage build
+> order below is unchanged and still valid; read the old "Sub-study A/B/C" labels
+> as RQ1 (retrieval) / RQ2 (representation) / cross-cutting modality. RQ3
+> (reasoning) and RQ4 (coarse-to-fine) are new axes added in the pivot.
 
 ## Operating principles (read before starting any stage)
 

@@ -1,8 +1,12 @@
-# Project Context: MP-VRDU Component Analysis Study
+# Project Context: MP-VRDU Mechanism Analysis Study
 
 > Orients any contributor (human or AI coding agent) to the project's goals,
 > current state, and decisions. Keep updated as the project evolves.
-> Last updated: 2026-06-08.
+> **GOVERNING spec: `docs/research_questions.md`** — the study analyses
+> MECHANISMS (RQ1–RQ4), not products. This file is the implementation context
+> (tool inventory, operating principles). The old A/B/C "sub-studies" were
+> reframed as research questions; see `docs/pivot.md`.
+> Last updated: 2026-06-10.
 
 ## 1. What this project is
 
@@ -62,20 +66,29 @@ combinations are valid:
   retrieval win, or did feeding images to the generator win?).
 - Mapping which (stage x stage) cells are valid is itself a contribution.
 
-## 4. Experimental structure: sub-studies (one variable each)
+## 4. Experimental structure: research questions (one mechanism each)
 
-Run as separate sub-studies sharing ONE harness, not a single giant grid
-(grid is too wide and half its cells are invalid).
+Run as separate RQ studies sharing ONE harness, not a single giant grid (grid is
+too wide and half its cells are invalid). Every study is a one-mechanism
+perturbation of the **reference pipeline** (`configs/reference.yaml`); see
+`docs/research_questions.md` for the full hypotheses, controls and subsets.
 
-- **Sub-study A — Retrieval method.** Fix representation AND generation modality.
-  Compare retrieval methods. Run as two blocks (generation=image, generation=text)
-  so the retrieval comparison is clean within each block.
-- **Sub-study B — Document representation.** Text retrievers ONLY (visual
-  retrievers don't participate, by definition). Fix the retriever (best from A),
-  vary the parser/OCR. Answers "how much does extraction quality matter?"
-- **Sub-study C — Generation modality.** Fix retrieval + representation at best
-  settings; flip image vs text vs image+text. Isolates the "both" comparison.
-- **Cross-cutting sweeps** (within conditions): top-k, chunking/granularity.
+- **RQ1 — Retrieval: similarity vs relation-aware (+ modality)** [SPINE]. Vary how
+  evidence pages are scored/selected — independent query-similarity (lexical /
+  dense / visual late-interaction / fusion) vs traversing document structure
+  (`traverse`, expansion). Control = no-retrieval floor + oracle ceiling.
+  *(formerly Sub-study A — retrieval method/top-k.)*
+- **RQ2 — Representation: fidelity & structure** [SPINE]. Text retrievers ONLY.
+  Vary extraction fidelity (parser/OCR) and flat-vs-structure chunking. Answers
+  "how much does extraction quality / structure preservation matter?"
+  *(formerly Sub-study B — document representation.)*
+- **RQ3 — Reasoning: sequential vs parallel** [PRINCIPAL]. Over a FIXED evidence
+  buffer, vary the reasoning structure (direct / CoT / self-reflection /
+  self-consistency / ToT) so the delta is reasoning alone. *(new axis.)*
+- **RQ4 — Coarse-to-fine narrowing** [IF-TIME]. Single-pass vs retrieve→rerank→read
+  at MATCHED final budget. Reuses RQ1 retrievers + RQ3 prompts. *(new axis.)*
+- **Cross-cutting** (pinned per RQ, reported): generation modality (image/text/
+  both — formerly Sub-study C), top-k, chunking/granularity, generator size.
 
 ## 5. Tools and techniques to test
 
@@ -170,8 +183,9 @@ ADDITIONAL (if time allows):
    one frozen generator answering, official metric producing a number.
 2. **Reproduce one published number** within reasonable margin (sanity anchor).
 3. **Add oracle upper bound** (gold evidence pages).
-4. **Retrieval methods one at a time** (Sub-study A), recall-validated first.
-5. **Representation** (Sub-study B), then **generation modality** (Sub-study C).
+4. **RQ1 retrieval** (similarity then relation-aware), recall-validated first.
+5. **RQ2 representation** (fidelity + structure), then **RQ3 reasoning**, then
+   **RQ4 coarse-to-fine** (depth-first — finish the SPINE before the extensions).
 6. Only then: secondary goals (LongDocURL, cross-domain, proposed method).
 
 ## 10. Known risks / things to watch

@@ -4,7 +4,7 @@
 -r requirements-light.txt
 
 # --- generation (Stage 2/3) ---
-# Pin torch to the cluster's CUDA module (kaya_cheatsheet.md). colpali-engine
+# Pin torch to the cluster's CUDA module (docs/kaya_cheatsheet.md). colpali-engine
 # also requires torch<2.12, so a 2.4–2.11 cuXXX build satisfies everything.
 torch>=2.3,<2.12
 torchvision                 # required by qwen-vl-utils
@@ -22,5 +22,7 @@ sentence-transformers>=3.0  # dense text
 colpali-engine>=0.3         # ColPali / ColQwen2.5 visual late-interaction
 
 # --- representation (Stage 5) ---
-# mineru (magic-pdf) is a heavy optional parser; install separately if needed.
+# MinerU conflicts with this environment's Transformers pin. Install the current
+# `mineru[pipeline]` package plus its undeclared `six` dependency in
+# ~/venvs/mineru-venv; see README.md.
 # tesseract parser uses pytesseract (in requirements-light) + the tesseract binary.

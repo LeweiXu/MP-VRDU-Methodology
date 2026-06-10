@@ -33,10 +33,20 @@ RETRIEVAL_METHODS = {
     "colpali",
     "colqwen",
     "hybrid",
+    "traverse",  # relation-aware: structural section/tree navigation (RQ1, H1b)
 }
 MODALITIES = {"image", "text", "both"}
 GENERATORS = {"mock", "local_small_vlm", "kaya_vlm"}
 JUDGES = {"rule", "llm"}
+# --- RQ3 reasoning axis (docs/research_questions.md RQ3): the reasoning STRUCTURE
+# applied over a FIXED evidence buffer, so the delta is reasoning alone. ---
+REASONINGS = {
+    "direct",            # no explicit reasoning (the control)
+    "cot",               # single-pass chain-of-thought
+    "self_reflection",   # CoT + one critic-driven revision pass (sequential)
+    "self_consistency",  # sample N (temp>0), aggregate by vote (parallel)
+    "tot",               # bounded tree-of-thoughts branch-and-select (parallel)
+}
 # --- Tier-1 retrieval post-processing toggles (docs/corpus_techniques.md) ---
 K_STRATEGIES = {"fixed", "gmm", "kmeans"}   # adaptive top-k (#1)
 RERANKS = {"none", "llm"}                    # retrieve -> rerank -> read (#3)
@@ -95,6 +105,12 @@ class GenerationConfig:
     mock_mode: str = "gold"          # mock only: "gold" | "wrong" | "echo"
     max_new_tokens: int = 256
     temperature: float = 0.0
+    # --- RQ3 reasoning axis: the reasoning STRUCTURE over a fixed evidence buffer.
+    # `direct` is the current behaviour (control). Parallel methods (self_consistency,
+    # tot) multiply LLM calls — that cost is logged per question (Usage.n_calls).
+    reasoning: str = "direct"        # direct | cot | self_reflection | self_consistency | tot
+    self_consistency_n: int = 5      # samples for self_consistency / tot branch width
+    reasoning_temperature: float = 0.7  # sampling temp for parallel reasoning methods
     load_in_4bit: bool = False       # quantise real VLMs (fit 12GB; local only)
     device_map: str = "auto"
     # bound vision tokens per page image (Qwen2.5-VL). Keeps many-page inputs
@@ -141,7 +157,11 @@ class RunConfig:
         _check("retrieval.expand", self.retrieval.expand, EXPANSIONS)
         _check("generation.modality", self.generation.modality, MODALITIES)
         _check("generation.generator", self.generation.generator, GENERATORS)
+        _check("generation.reasoning", self.generation.reasoning, REASONINGS)
         _check("judge.type", self.judge.type, JUDGES)
+        if self.generation.reasoning in {"self_consistency", "tot"} \
+                and self.generation.self_consistency_n < 1:
+            raise ConfigError("generation.self_consistency_n must be >= 1")
         if self.generation.generator == "mock":
             _check("generation.mock_mode", self.generation.mock_mode,
                    {"gold", "wrong", "echo"})

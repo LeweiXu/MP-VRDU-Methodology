@@ -15,11 +15,17 @@ set -euo pipefail
 CONFIG="${1:?usage: sbatch run_config.sbatch <config.yaml>}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
+if [[ "$CONFIG" != /* ]]; then
+  CONFIG="$REPO/$CONFIG"
+fi
 source "$HERE/env.sh"
 load_modules
 activate_env
 set_offline
 
+mkdir -p "$MPVRDU_RESULTS" "$MPVRDU_LOGS/config"
+STEM="$(basename "${CONFIG%.yaml}")"
 cd "$REPO"
 python -m mpvrdu.pipeline --config "$CONFIG" \
-  --out "$MPVRDU_RESULTS/$(basename "${CONFIG%.yaml}").jsonl"
+  --out "$MPVRDU_RESULTS/$STEM.jsonl" \
+  --log-file "$MPVRDU_LOGS/config/${STEM}__${SLURM_JOB_ID}.log"

@@ -15,4 +15,5 @@ source "$HERE/env.sh"
 load_modules
 activate_env
 
-python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')"
+python -c "import torch, transformers; print('main torch:', torch.__version__); print('transformers:', transformers.__version__); print('CUDA available:', torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')"
+"$MPVRDU_MINERU_PYTHON" -c "from importlib.metadata import version; import torch; print('MinerU:', version('mineru')); print('MinerU CUDA:', torch.cuda.is_available())"

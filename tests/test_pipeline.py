@@ -6,7 +6,7 @@ Proves the SCORING + plumbing are correct independent of model quality:
 And (Stage 3) the oracle selector feeds EXACTLY the gold pages.
 """
 
-from mpvrdu.config import dict_to_config
+from mpvrdu.config import dict_to_config, load_config
 from mpvrdu.pipeline import run
 from mpvrdu.results import read_rows
 from mpvrdu.retrieve.base import Oracle
@@ -64,6 +64,27 @@ def test_no_retrieval_runs(synthetic_ds, chdir_tmp):
     assert m["n"] == 7
     # first-2-pages selection -> recall < 1 for some questions (e.g. evidence on p3)
     assert m["mean_recall_at_k"] < 1.0
+
+
+def test_reference_pipeline_runs_end_to_end(synthetic_ds, chdir_tmp):
+    """docs/pivot.md Step 1: the named control validates and runs on the dev slice.
+
+    Applies the documented LOCAL OVERRIDES (3B->mock, llm judge->rule) so the
+    control config exercises end-to-end without GPU/models — the real Kaya run
+    keeps kaya_vlm + the llm judge.
+    """
+    from pathlib import Path
+    repo_root = Path(__file__).resolve().parent.parent
+    cfg = load_config(repo_root / "configs" / "reference.yaml")
+    cfg.data.name = "synthetic"
+    cfg.data.slice = "dev"
+    cfg.generation.generator = "mock"
+    cfg.generation.mock_mode = "gold"
+    cfg.judge.type = "rule"
+    cfg.validate()
+    m = run(cfg, dataset=synthetic_ds, out_path="out.jsonl")
+    assert m["n"] == 7
+    assert m["accuracy"] == 1.0          # mock(gold) over dense-retrieved pages
 
 
 def test_oracle_feeds_exactly_gold_pages(synthetic_ds):

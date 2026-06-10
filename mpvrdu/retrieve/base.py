@@ -234,13 +234,18 @@ class RetrieverSelector(EvidenceSelector):
                                 "ranked_pages": list(pages)}
 
         # #3 rerank the candidate pages over their text, then cut keeps top_k.
+        # This is RQ4's retrieve->rerank->read coarse-to-fine stage; the candidate
+        # pages reranked here are the extra stage's per-page LLM calls (logged so
+        # the cost of narrowing is visible — RQ spec RQ4 cost co-axis).
         if self.reranker is not None and pages:
             page_text, _ = self._parsed_pages(document)
-            reranked = self.reranker.rerank(
-                question.question, [(p, page_text.get(p, "")) for p in pages])
+            candidates = [(p, page_text.get(p, "")) for p in pages]
+            reranked = self.reranker.rerank(question.question, candidates)
             pages = [p for p, _ in reranked]
             scores = [float(s) for _, s in reranked]
             meta["reranked"] = True
+            meta["rerank_calls"] = len(candidates)   # extra-stage LLM calls
+            meta["candidates_reranked"] = len(candidates)
 
         # #1 adaptive vs fixed cut.
         keep = apply_k_strategy(scores, self.k_strategy, self.top_k)

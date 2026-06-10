@@ -16,6 +16,16 @@ from .mock import MockGenerator
 
 def build_generator(cfg: GenerationConfig,
                     dataset: Optional[Dataset] = None) -> Generator:
+    base = _build_base_generator(cfg, dataset)
+    # RQ3 reasoning axis: wrap the raw generator with a reasoning strategy over a
+    # fixed evidence buffer. `direct` returns the base unchanged (the control).
+    from .reasoning import wrap_reasoning
+
+    return wrap_reasoning(base, cfg)
+
+
+def _build_base_generator(cfg: GenerationConfig,
+                          dataset: Optional[Dataset] = None) -> Generator:
     if cfg.generator == "mock":
         gold_lookup = {}
         if dataset is not None:

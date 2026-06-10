@@ -24,11 +24,15 @@ set_offline                      # compute node = no internet
 MODEL="${MPVRDU_MODEL:-Qwen/Qwen2.5-VL-7B-Instruct}"   # or -32B
 echo "grid with generator=kaya_vlm model=$MODEL  HF_HOME=$HF_HOME"
 
+mkdir -p "$MPVRDU_RESULTS/grid" "$MPVRDU_LOGS"
 cd "$REPO"
 python scripts/run_grid.py \
   --suite experiments/grid_kaya_7b.yaml \
   --generator kaya_vlm --model-id "$MODEL" \
-  --results-root "$MPVRDU_RESULTS/grid"
+  --results-root "$MPVRDU_RESULTS/grid" \
+  --logs-root "$MPVRDU_LOGS" \
+  --isolate \
+  "$@"
 
 # auto-generate the analysis report + figures from whatever has completed
 python scripts/report.py --results "$MPVRDU_RESULTS/grid" \

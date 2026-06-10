@@ -2,7 +2,8 @@
 
 from mpvrdu.analysis import (build_report, oracle_gap, pairwise_significance,
                              recall_accuracy_correlation, sanity_checks,
-                             seed_variance, topk_series)
+                             seed_variance, topk_series,
+                             write_comparisons_csv)
 from mpvrdu.config import dict_to_config
 from mpvrdu.pipeline import run
 
@@ -118,6 +119,39 @@ def test_build_report_end_to_end(synthetic_ds, chdir_tmp):
     assert "Accuracy by evidence source" in md
     assert "Conditions by sub-study" in md              # grouped subdirs
     assert "### baselines" in md and "### A_retrieval" in md
+
+
+def test_write_comparisons_csv(tmp_path):
+    import csv
+
+    from mpvrdu.config import dict_to_config
+    from mpvrdu.results import ResultsWriter
+
+    cfg = dict_to_config({
+        "name": "A__bm25",
+        "retrieval": {"method": "bm25", "top_k": 2},
+        "generation": {"generator": "mock", "modality": "image"},
+    })
+    result = tmp_path / "results" / "A_retrieval" / "run.jsonl"
+    with ResultsWriter(result, config=cfg) as writer:
+        writer.write({
+            "qid": "q1", "question": "Revenue?", "question_type": "single",
+            "gold": "42 million", "pred": "41 million", "correct": False,
+            "gold_answerable": True, "evidence_pages": [2, 4],
+            "selected_pages_0based": [1, 4], "recall_at_k": 0.5,
+        })
+
+    out = tmp_path / "comparisons.csv"
+    assert write_comparisons_csv(tmp_path / "results", out) == 1
+    with out.open(encoding="utf-8", newline="") as fh:
+        row = next(csv.DictReader(fh))
+    assert row["gold_pages_1based"] == "2 4"
+    assert row["retrieved_pages_1based"] == "2 5"
+    assert row["missing_gold_pages"] == "4"
+    assert row["extra_retrieved_pages"] == "5"
+    assert row["retrieval_status"] == "miss"
+    assert row["failure_mode"] == "retrieval_miss"
+    assert "[-42-]" in row["answer_diff"] and "{+41+}" in row["answer_diff"]
 
 
 # --------------------------------------------------------------------------- #

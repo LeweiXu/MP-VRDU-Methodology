@@ -53,6 +53,16 @@ def build_selector(cfg: RunConfig, reranker=None) -> EvidenceSelector:
         return NoRetrieval(n_pages=cfg.retrieval.no_retrieval_pages)
     if method == "oracle":
         return Oracle()
+    if method == "traverse":
+        # relation-aware structural traversal (RQ1, H1b) — its own selector, not a
+        # similarity Retriever. It applies expansion (#4/#5) itself, reusing the
+        # parsed structure it already builds for traversal.
+        from .traverse import TraverseSelector
+
+        return TraverseSelector(
+            top_k=cfg.retrieval.top_k, parser_name=cfg.representation.parser,
+            dpi=cfg.representation.dpi, chunking=cfg.representation.chunking,
+            expand=cfg.retrieval.expand, expand_window=cfg.retrieval.expand_window)
     if method in {"grep", "bm25", "tfidf", "dense", "colpali", "colqwen"}:
         return _retriever_selector(method, cfg, reranker=reranker)
     if method == "hybrid":
